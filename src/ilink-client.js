@@ -130,6 +130,17 @@ export class ILinkClient {
     this.batcher = new MessageBatcher((text, title) => this._sendRawMessage(text, title));
   }
 
+  // 安全获取真实的微信用户 ID (杜绝被 Bot 自身 ID 污染)
+  get effectiveUserId() {
+    if (this.state.userId && this.state.userId.endsWith('@im.wechat')) {
+      return this.state.userId;
+    }
+    if (this.state.userWechatId && this.state.userWechatId.endsWith('@im.wechat')) {
+      return this.state.userWechatId;
+    }
+    return this.state.userId;
+  }
+
   // 剩余可用配额（满额通常为 10 条）
   get remainingQuota() {
     if (!this.state.contextToken) return 0;
@@ -244,6 +255,7 @@ export class ILinkClient {
       this.state.botToken = data.bot_token;
       this.state.botId = data.ilink_bot_id;
       this.state.userId = data.ilink_user_id;
+      this.state.userWechatId = data.ilink_user_id;
       this.state.syncBuf = '';
       this.state.contextToken = null;
       this.state.contextTokenUsedCount = 0;
@@ -306,6 +318,20 @@ export class ILinkClient {
       count = data.msgs.length;
       console.log(`[iLink] 收到 ${count} 条微信入站消息，正在解析 context_token...`);
       for (const msg of data.msgs) {
+        // 关键过滤 1: 仅处理来自微信真实用户的主动上行消息 (message_type === 1)
+        // 严格忽略 Bot 发送消息后的回显与送达回执 (message_type === 2)
+        if (msg.message_type && msg.message_type !== 1) {
+          console.log(`[iLink] 收到非用户入站消息 (message_type: ${msg.message_type})，跳过会话上下文更新`);
+          continue;
+        }
+
+        const sender = findFromUserId(msg);
+        // 关键过滤 2: 严格防止 Bot 自身 ID 污染用户 ID
+        if (sender && sender.includes('@im.bot')) {
+          console.log(`[iLink] 忽略来自 Bot 账号自身的消息回显: ${sender}`);
+          continue;
+        }
+
         const token = findContextToken(msg);
         if (token) {
           // 捕获用户在微信端的主动回复 -> 满血重置 10 条配额与 24 小时倒计时！
@@ -316,11 +342,12 @@ export class ILinkClient {
           this.state.invalidationReason = null;
           captured = true;
           hasUpdated = true;
-          console.log(`[iLink] ★★★ 成功捕获微信回复 context_token！10 条配额与 24 小时有效期已满血重置！网关状态已就绪 (READY)！★★★`);
+          console.log(`[iLink] ★★★ 成功捕获微信用户回复 context_token！10 条配额与 24 小时有效期已满血重置！网关状态已就绪 (READY)！★★★`);
         }
-        const sender = findFromUserId(msg);
-        if (sender) {
+
+        if (sender && sender.endsWith('@im.wechat')) {
           this.state.userId = sender;
+          this.state.userWechatId = sender;
           hasUpdated = true;
         }
       }
@@ -454,9 +481,19 @@ export class ILinkClient {
       finalContent = finalContent.slice(0, 3960) + '\n...(已截断)' + footer;
     }
 
+    const targetUserId = this.effectiveUserId;
+    if (!targetUserId || targetUserId.includes('@im.bot')) {
+      throw new Error(`目标微信用户 ID 异常 (${targetUserId})，请重新在微信向 Bot 发送任意字符恢复`);
+    }
+
+    // 每次外发通知必须携带全局唯一的 client_id，防止微信服务器静默判定为重试去重包并丢弃！
+    const clientId = `clawbot-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
     const payload = {
       msg: {
-        to_user_id: this.state.userId,
+        from_user_id: '',
+        to_user_id: targetUserId,
+        client_id: clientId,
         message_type: 2,
         message_state: 2,
         context_token: this.state.contextToken,
@@ -464,6 +501,8 @@ export class ILinkClient {
       },
       base_info: this._getBaseInfo()
     };
+
+    console.log(`[iLink] 正在向微信用户推送通知 -> 用户: ${targetUserId}, clientId: ${clientId}`);
 
     const res = await fetch(`${config.ilinkBaseUrl}/ilink/bot/sendmessage`, {
       method: 'POST',

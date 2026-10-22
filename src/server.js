@@ -53,7 +53,7 @@ router.get('/api/status', requireApiKey, (req, res) => {
   res.json({
     success: true,
     status: iLink.statusDescription,
-    userId: iLink.state.userId || null,
+    userId: iLink.effectiveUserId || iLink.state.userId || null,
     botId: iLink.state.botId || null,
     hasContextToken: Boolean(iLink.state.contextToken),
     quota: {

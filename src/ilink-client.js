@@ -68,6 +68,8 @@ class MessageBatcher {
       }
     }
   }
+}
+
 // 递归查找对象内任意位置的 context_token
 function findContextToken(obj) {
   if (!obj || typeof obj !== 'object') return null;

@@ -119,7 +119,13 @@ export class ILinkClient {
       contextTokenExpireAt: null,
       invalidationReason: null,
       syncBuf: '',
-      lastActiveTime: null
+      lastActiveTime: null,
+      reminderSentToken: null,
+      reminderSentAt: null,
+      webhookTriggeredToken: null,
+      webhookTriggeredAt: null,
+      webhookLastStatus: null,
+      webhookLastError: null
     };
     this.pollingActive = false;
     this.abortController = null;
@@ -261,6 +267,12 @@ export class ILinkClient {
       this.state.contextTokenUsedCount = 0;
       this.state.contextTokenCreatedAt = null;
       this.state.contextTokenExpireAt = null;
+      this.state.reminderSentToken = null;
+      this.state.reminderSentAt = null;
+      this.state.webhookTriggeredToken = null;
+      this.state.webhookTriggeredAt = null;
+      this.state.webhookLastStatus = null;
+      this.state.webhookLastError = null;
       this.state.invalidationReason = '已扫码完成，请在手机微信向 Bot 发送任意文本（如发送 1）以满血激活';
       this.state.lastActiveTime = Date.now();
       storage.set(this.state);
@@ -339,6 +351,12 @@ export class ILinkClient {
           this.state.contextTokenUsedCount = 0; // 重置已用额度为 0
           this.state.contextTokenCreatedAt = Date.now();
           this.state.contextTokenExpireAt = Date.now() + 24 * 3600 * 1000; // 满血赋予 24 小时
+          this.state.reminderSentToken = null; // 重置提醒状态，准备为新 Token 调度下一次提醒
+          this.state.reminderSentAt = null;
+          this.state.webhookTriggeredToken = null; // 重置到期前半小时 Webhook 任务触发标记
+          this.state.webhookTriggeredAt = null;
+          this.state.webhookLastStatus = null;
+          this.state.webhookLastError = null;
           this.state.invalidationReason = null;
           captured = true;
           hasUpdated = true;
@@ -630,7 +648,13 @@ export class ILinkClient {
       contextTokenExpireAt: null,
       invalidationReason: null,
       syncBuf: '',
-      lastActiveTime: null
+      lastActiveTime: null,
+      reminderSentToken: null,
+      reminderSentAt: null,
+      webhookTriggeredToken: null,
+      webhookTriggeredAt: null,
+      webhookLastStatus: null,
+      webhookLastError: null
     };
     storage.clear();
     console.log('[iLink] 已清除本地登录与授权凭据');

@@ -2,8 +2,9 @@ import express from 'express';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { config } from './config.js';
+import { config, saveTriggerConfig } from './config.js';
 import { iLink } from './ilink-client.js';
+import { reminderService } from './reminder.js';
 import { requireApiKey, apiLimiter } from './middleware.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -63,6 +64,7 @@ router.get('/api/status', requireApiKey, (req, res) => {
     },
     expireAt: iLink.state.contextTokenExpireAt || null,
     expireRemainingHours: (iLink.remainingTimeMs / 3600000).toFixed(1),
+    reminder: reminderService.getStatus(),
     invalidationDetail: iLink.invalidationDetail,
     batchWindowMs: config.batchWindowMs,
     lastActiveTime: iLink.state.lastActiveTime || null
@@ -215,6 +217,52 @@ router.post('/admin/logout', requireApiKey, (req, res) => {
   }
 });
 
+// 手动测试发送保活提醒通知
+router.post('/admin/test-reminder', requireApiKey, async (req, res) => {
+  try {
+    const result = await reminderService.checkAndTrigger(true);
+    res.json({
+      success: true,
+      message: '测试保活提醒通知已成功推送至微信！请在微信查看并回复任意内容进行测试。',
+      result
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 手动测试触发 Token 到期前半小时外部 Webhook 任务
+router.post('/admin/test-trigger-webhook', requireApiKey, async (req, res) => {
+  try {
+    const result = await reminderService.checkAndTriggerWebhook(true);
+    res.json({
+      success: true,
+      message: `到期前半小时 Webhook 任务执行成功！[HTTP ${result.status}]`,
+      result
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 动态更新 Webhook 触发配置 (URL 与秘钥)
+router.post('/admin/update-trigger-config', requireApiKey, (req, res) => {
+  try {
+    const { url, key } = req.body || {};
+    saveTriggerConfig(url, key);
+    res.json({
+      success: true,
+      message: 'Webhook 触发配置已成功更新并持久化',
+      config: {
+        url: config.triggerWebhookUrl,
+        authConfigured: Boolean(config.triggerAuthKey)
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // 5. 渲染管理页面（读取独立 html 模板，彻底规避模板转义与 Cloudflare 脚本语法错误）
 function getAdminHtml() {
   const htmlTpl = fs.readFileSync(adminHtmlPath, 'utf-8');
@@ -243,7 +291,8 @@ app.use((req, res) => {
 
 // 优雅停机
 function handleShutdown(signal) {
-  console.log(`[Server] 接收到 ${signal}，正在优雅关停长轮询并注销...`);
+  console.log(`[Server] 接收到 ${signal}，正在优雅关停长轮询与定时任务...`);
+  reminderService.stop();
   iLink.pollingActive = false;
   if (iLink.abortController) {
     try { iLink.abortController.abort(); } catch {}
@@ -262,6 +311,9 @@ app.listen(config.port, '0.0.0.0', () => {
   console.log(`[Server] 健康检查: http://127.0.0.1:${config.port}${config.routePrefix}/health`);
   console.log(`[Server] 推送接口: http://127.0.0.1:${config.port}${config.routePrefix}/api/send`);
   console.log(`[Server] 消息合批窗口: ${config.batchWindowMs}ms | 单会话硬配额: ${config.maxQuota}条`);
+
+  // 启动微信 Token 过期定时自动提醒守护任务
+  reminderService.start(iLink);
 
   if (iLink.state.botToken) {
     console.log('[Server] 发现已有授权记录，正在拉起后台长轮询保活回路...');

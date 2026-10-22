@@ -34,8 +34,45 @@ export const config = {
   // 微信单会话硬限制配额（默认 10 条）
   maxQuota: parseInt(process.env.MAX_QUOTA || '10', 10),
   // 消息合并与合批等待窗口（毫秒，默认 2500ms，设为 0 则不合并即时发送）
-  batchWindowMs: parseInt(process.env.BATCH_WINDOW_MS || '2500', 10)
+  batchWindowMs: parseInt(process.env.BATCH_WINDOW_MS || '2500', 10),
+  // 到期前半小时 Webhook 任务触发配置
+  triggerWebhookUrl: process.env.TRIGGER_WEBHOOK_URL || 'http://job.coral.cc.cd/api/trigger/tasks/5',
+  triggerAuthKey: process.env.TRIGGER_AUTH_KEY || ''
 };
+
+// 尝试从持久化配置文件加载保存的 trigger 配置
+function loadSavedTriggerConfig() {
+  try {
+    const triggerConfigFile = path.resolve(config.dataDir, 'trigger_config.json');
+    if (fs.existsSync(triggerConfigFile)) {
+      const data = JSON.parse(fs.readFileSync(triggerConfigFile, 'utf-8'));
+      if (data.triggerWebhookUrl) config.triggerWebhookUrl = data.triggerWebhookUrl;
+      if (data.triggerAuthKey !== undefined) config.triggerAuthKey = data.triggerAuthKey;
+    }
+  } catch (err) {
+    console.error('[Config] 读取 trigger_config.json 失败:', err.message);
+  }
+}
+
+loadSavedTriggerConfig();
+
+export function saveTriggerConfig(url, key) {
+  if (url) config.triggerWebhookUrl = url.trim();
+  if (key !== undefined) config.triggerAuthKey = key.trim();
+  try {
+    if (!fs.existsSync(config.dataDir)) {
+      fs.mkdirSync(config.dataDir, { recursive: true });
+    }
+    const triggerConfigFile = path.resolve(config.dataDir, 'trigger_config.json');
+    fs.writeFileSync(triggerConfigFile, JSON.stringify({
+      triggerWebhookUrl: config.triggerWebhookUrl,
+      triggerAuthKey: config.triggerAuthKey
+    }, null, 2), 'utf-8');
+    console.log('[Config] 已成功持久化 trigger_config.json 配置');
+  } catch (err) {
+    console.error('[Config] 保存 trigger_config.json 失败:', err.message);
+  }
+}
 
 if (config.apiKey === 'default-secret-change-me' && process.env.NODE_ENV === 'production') {
   console.warn('[SECURITY WARNING] 正在使用默认 API_KEY，请在环境变量或 .env 中设置独立高强度密钥！');

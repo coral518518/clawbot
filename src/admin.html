@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
+
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -19,7 +20,13 @@
       --danger: #ef4444;
       --font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
     }
-    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
     body {
       background: var(--bg);
       color: var(--text);
@@ -31,6 +38,7 @@
       padding: 30px 16px;
       line-height: 1.6;
     }
+
     .container {
       width: 100%;
       max-width: 680px;
@@ -38,6 +46,7 @@
       flex-direction: column;
       gap: 20px;
     }
+
     .header {
       display: flex;
       align-items: center;
@@ -45,6 +54,7 @@
       border-bottom: 1px solid var(--card-border);
       padding-bottom: 16px;
     }
+
     .header h1 {
       font-size: 20px;
       font-weight: 700;
@@ -53,6 +63,7 @@
       align-items: center;
       gap: 10px;
     }
+
     .badge {
       display: inline-flex;
       align-items: center;
@@ -62,17 +73,44 @@
       font-size: 12px;
       font-weight: 600;
     }
+
     .badge-dot {
       width: 8px;
       height: 8px;
       border-radius: 50%;
     }
-    .badge-READY { background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.3); }
-    .badge-READY .badge-dot { background: #10b981; box-shadow: 0 0 8px #10b981; }
-    .badge-WAITING_CONTEXT { background: rgba(245, 158, 11, 0.15); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.3); }
-    .badge-WAITING_CONTEXT .badge-dot { background: #f59e0b; box-shadow: 0 0 8px #f59e0b; }
-    .badge-UNPAIRED { background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.3); }
-    .badge-UNPAIRED .badge-dot { background: #ef4444; }
+
+    .badge-READY {
+      background: rgba(16, 185, 129, 0.15);
+      color: #34d399;
+      border: 1px solid rgba(16, 185, 129, 0.3);
+    }
+
+    .badge-READY .badge-dot {
+      background: #10b981;
+      box-shadow: 0 0 8px #10b981;
+    }
+
+    .badge-WAITING_CONTEXT {
+      background: rgba(245, 158, 11, 0.15);
+      color: #fbbf24;
+      border: 1px solid rgba(245, 158, 11, 0.3);
+    }
+
+    .badge-WAITING_CONTEXT .badge-dot {
+      background: #f59e0b;
+      box-shadow: 0 0 8px #f59e0b;
+    }
+
+    .badge-UNPAIRED {
+      background: rgba(239, 68, 68, 0.15);
+      color: #f87171;
+      border: 1px solid rgba(239, 68, 68, 0.3);
+    }
+
+    .badge-UNPAIRED .badge-dot {
+      background: #ef4444;
+    }
 
     .card {
       background: var(--card-bg);
@@ -82,6 +120,7 @@
       padding: 24px;
       box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
     }
+
     .card h2 {
       font-size: 16px;
       font-weight: 600;
@@ -90,6 +129,7 @@
       align-items: center;
       justify-content: space-between;
     }
+
     .tip-box {
       background: rgba(255, 255, 255, 0.04);
       border-left: 3px solid var(--accent);
@@ -99,6 +139,7 @@
       color: #d1d5db;
       margin-bottom: 16px;
     }
+
     .tip-box code {
       background: rgba(255, 255, 255, 0.1);
       padding: 2px 6px;
@@ -106,6 +147,7 @@
       color: #93c5fd;
       font-family: monospace;
     }
+
     .quota-container {
       background: rgba(0, 0, 0, 0.25);
       border: 1px solid rgba(255, 255, 255, 0.06);
@@ -113,18 +155,21 @@
       padding: 14px;
       margin-bottom: 16px;
     }
+
     .quota-header {
       display: flex;
       justify-content: space-between;
       font-size: 13px;
       margin-bottom: 8px;
     }
+
     .progress-bar-bg {
       background: rgba(255, 255, 255, 0.1);
       height: 8px;
       border-radius: 4px;
       overflow: hidden;
     }
+
     .progress-bar-fill {
       height: 100%;
       background: var(--success);
@@ -148,20 +193,38 @@
       transition: all 0.2s ease;
       text-decoration: none;
     }
-    .btn:hover { background: var(--accent-hover); }
-    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .btn:hover {
+      background: var(--accent-hover);
+    }
+
+    .btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
     .btn-secondary {
       background: rgba(255, 255, 255, 0.08);
       color: #e5e7eb;
     }
-    .btn-secondary:hover { background: rgba(255, 255, 255, 0.14); }
+
+    .btn-secondary:hover {
+      background: rgba(255, 255, 255, 0.14);
+    }
+
     .btn-danger {
       background: rgba(239, 68, 68, 0.2);
       color: #fca5a5;
       border: 1px solid rgba(239, 68, 68, 0.3);
     }
-    .btn-danger:hover { background: rgba(239, 68, 68, 0.35); }
-    .btn-block { width: 100%; }
+
+    .btn-danger:hover {
+      background: rgba(239, 68, 68, 0.35);
+    }
+
+    .btn-block {
+      width: 100%;
+    }
 
     .qrcode-wrapper {
       display: flex;
@@ -175,6 +238,7 @@
       padding: 20px;
       margin: 16px 0;
     }
+
     .qrcode-wrapper img {
       max-width: 200px;
       border-radius: 8px;
@@ -182,27 +246,34 @@
       background: white;
       padding: 8px;
     }
+
     .info-grid {
       display: grid;
       grid-template-columns: repeat(2, 1fr);
       gap: 12px;
       margin-bottom: 16px;
     }
+
     @media (max-width: 480px) {
-      .info-grid { grid-template-columns: 1fr; }
+      .info-grid {
+        grid-template-columns: 1fr;
+      }
     }
+
     .info-item {
       background: rgba(0, 0, 0, 0.2);
       padding: 10px 14px;
       border-radius: 6px;
       border: 1px solid rgba(255, 255, 255, 0.04);
     }
+
     .info-label {
       font-size: 11px;
       color: var(--text-muted);
       text-transform: uppercase;
       letter-spacing: 0.5px;
     }
+
     .info-value {
       font-size: 13px;
       font-family: monospace;
@@ -210,17 +281,21 @@
       margin-top: 4px;
       word-break: break-all;
     }
+
     .input-group {
       display: flex;
       flex-direction: column;
       gap: 6px;
       margin-bottom: 12px;
     }
+
     .input-label {
       font-size: 13px;
       color: var(--text-muted);
     }
-    .input-text, .input-textarea {
+
+    .input-text,
+    .input-textarea {
       width: 100%;
       background: rgba(0, 0, 0, 0.3);
       border: 1px solid rgba(255, 255, 255, 0.12);
@@ -231,13 +306,17 @@
       outline: none;
       transition: border 0.2s;
     }
-    .input-text:focus, .input-textarea:focus {
+
+    .input-text:focus,
+    .input-textarea:focus {
       border-color: var(--accent);
     }
+
     .input-textarea {
       resize: vertical;
       min-height: 70px;
     }
+
     .code-block {
       background: #060911;
       border: 1px solid rgba(255, 255, 255, 0.06);
@@ -250,6 +329,7 @@
       white-space: pre-wrap;
       word-break: break-all;
     }
+
     .feedback-msg {
       padding: 10px 14px;
       border-radius: 6px;
@@ -257,13 +337,26 @@
       margin-top: 10px;
       display: none;
     }
-    .feedback-success { background: rgba(16, 185, 129, 0.2); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.3); }
-    .feedback-error { background: rgba(239, 68, 68, 0.2); color: #fca5a5; border: 1px solid rgba(239, 68, 68, 0.3); }
+
+    .feedback-success {
+      background: rgba(16, 185, 129, 0.2);
+      color: #34d399;
+      border: 1px solid rgba(16, 185, 129, 0.3);
+    }
+
+    .feedback-error {
+      background: rgba(239, 68, 68, 0.2);
+      color: #fca5a5;
+      border: 1px solid rgba(239, 68, 68, 0.3);
+    }
 
     .modal-overlay {
       position: fixed;
-      top: 0; left: 0; right: 0; bottom: 0;
-      background: rgba(0,0,0,0.8);
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0, 0, 0, 0.8);
       backdrop-filter: blur(8px);
       display: none;
       align-items: center;
@@ -271,6 +364,7 @@
       padding: 20px;
       z-index: 1000;
     }
+
     .modal-card {
       background: #151c2e;
       border: 1px solid rgba(255, 255, 255, 0.12);
@@ -278,10 +372,11 @@
       max-width: 420px;
       width: 100%;
       padding: 24px;
-      box-shadow: 0 12px 36px rgba(0,0,0,0.6);
+      box-shadow: 0 12px 36px rgba(0, 0, 0, 0.6);
     }
   </style>
 </head>
+
 <body>
   <div class="container">
     <!-- 顶栏 -->
@@ -300,10 +395,15 @@
     <div class="card">
       <h2>
         <span>配对与连接状态</span>
-        <div style="display: flex; gap: 8px;">
-          <button class="btn btn-secondary" onclick="checkState()" style="padding: 6px 12px; font-size: 12px;">刷新</button>
-          <button class="btn btn-secondary" onclick="manualSync(event)" style="padding: 6px 12px; font-size: 12px;">同步微信消息</button>
-          <button class="btn btn-danger" onclick="confirmLogout()" style="padding: 6px 12px; font-size: 12px;">解除绑定</button>
+        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+          <button class="btn btn-secondary" onclick="checkState()"
+            style="padding: 6px 12px; font-size: 12px;">刷新</button>
+          <button class="btn btn-secondary" onclick="testReminder(event)" style="padding: 6px 12px; font-size: 12px;">🔔
+            测试保活提醒</button>
+          <button class="btn btn-secondary" onclick="manualSync(event)"
+            style="padding: 6px 12px; font-size: 12px;">同步微信消息</button>
+          <button class="btn btn-danger" onclick="confirmLogout()"
+            style="padding: 6px 12px; font-size: 12px;">解除绑定</button>
         </div>
       </h2>
 
@@ -339,16 +439,75 @@
         </div>
       </div>
 
+      <!-- 定时保活提醒监控卡片 -->
+      <div class="quota-container"
+        style="background: rgba(14, 23, 42, 0.7); border-left: 3px solid var(--accent); margin-bottom: 16px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+          <span style="font-size: 13px; font-weight: 600; color: #93c5fd;">⏰ Token 定时保活提醒守护 (北京时间)</span>
+          <span id="valReminderBadge"
+            style="font-size: 11px; padding: 2px 8px; border-radius: 999px; background: rgba(59, 130, 246, 0.15); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.3);">未激活</span>
+        </div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 12px; color: #cbd5e1;">
+          <div><strong>Token 到期时间：</strong><span id="valTokenExpireBeijing"
+              style="color: #f3f4f6; font-family: monospace;">-</span></div>
+          <div><strong>计划提醒时间：</strong><span id="valNextReminderBeijing"
+              style="color: #f3f4f6; font-family: monospace;">-</span></div>
+        </div>
+        <div
+          style="font-size: 11px; color: var(--text-muted); margin-top: 6px; border-top: 1px dashed rgba(255, 255, 255, 0.08); padding-top: 6px;">
+          📌 <strong>规则：</strong>北京时间 22:00 ~ 次日 12:00 到期则 22:00 发送提醒；其它时间提前 2 小时提醒。提醒后在微信回复任意内容即可满血刷新。
+        </div>
+      </div>
+
+      <!-- 到期前半小时外部 Webhook 任务卡片 -->
+      <div class="quota-container"
+        style="background: rgba(14, 23, 42, 0.7); border-left: 3px solid #8b5cf6; margin-bottom: 16px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+          <span style="font-size: 13px; font-weight: 600; color: #c4b5fd;">🚀 到期前半小时自动任务 Webhook (POST)</span>
+          <span id="valWebhookBadge"
+            style="font-size: 11px; padding: 2px 8px; border-radius: 999px; background: rgba(139, 92, 246, 0.15); color: #a78bfa; border: 1px solid rgba(139, 92, 246, 0.3);">未激活</span>
+        </div>
+        <div style="font-size: 12px; color: #cbd5e1; line-height: 1.6;">
+          <div><strong>目标 URL：</strong><code id="valWebhookUrl"
+              style="background: rgba(0,0,0,0.3); padding: 2px 6px; border-radius: 4px; color: #ddd6fe;">http://job.coral.cc.cd/api/trigger/tasks/5</code>
+          </div>
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 4px;">
+            <div><strong>计划触发时间：</strong><span id="valWebhookPlanTime" style="font-family: monospace;">-</span></div>
+            <div><strong>授权头部状态：</strong><span id="valWebhookAuthStatus" style="font-family: monospace;">-</span></div>
+          </div>
+          <div id="valWebhookExecResult" style="margin-top: 4px; display: none;"><strong>执行结果：</strong><span
+              id="valWebhookExecDetail">-</span></div>
+        </div>
+        <!-- 秘钥配置与测试操作栏 -->
+        <div
+          style="margin-top: 10px; padding-top: 8px; border-top: 1px dashed rgba(255, 255, 255, 0.08); display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+          <input id="webhookKeyInput" class="input-text" type="password" placeholder="配置任务秘钥"
+            style="flex: 1; min-width: 180px; padding: 6px 10px; font-size: 12px;" />
+          <button class="btn btn-secondary" onclick="saveWebhookKey()"
+            style="padding: 6px 12px; font-size: 12px; white-space: nowrap;">保存秘钥</button>
+          <button class="btn btn-secondary" onclick="testTriggerWebhook(event)"
+            style="padding: 6px 12px; font-size: 12px; white-space: nowrap; background: rgba(139, 92, 246, 0.2); color: #c4b5fd; border: 1px solid rgba(139, 92, 246, 0.4);">🚀
+            测试触发</button>
+        </div>
+      </div>
+
       <!-- 二维码显示区 -->
       <div id="qrSection" style="display: none;">
         <div class="qrcode-wrapper">
-          <div id="qrPlaceholder" style="font-size: 13px; color: var(--text-muted); text-align: center;">点击下方按钮获取微信扫码授权二维码</div>
+          <div id="qrPlaceholder" style="font-size: 13px; color: var(--text-muted); text-align: center;">
+            点击下方按钮获取微信扫码授权二维码</div>
           <div id="qrcodeImgBox" style="display: none; text-align: center;">
-            <div id="qrcodeDiv" style="display: inline-block; background: white; padding: 12px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.4);"></div>
-            <div id="qrCountdown" style="font-size: 12px; color: var(--text-muted); margin-top: 10px;">二维码有效中，等待微信扫码...</div>
-            <div id="qrDirectLinks" style="display: flex; gap: 8px; justify-content: center; margin-top: 10px; flex-wrap: wrap;">
-              <a id="qrOpenLink" href="#" target="_blank" class="btn btn-secondary" style="font-size: 12px; padding: 6px 12px; text-decoration: none;">🔗 手机微信直接打开授权</a>
-              <button id="qrCopyBtn" type="button" class="btn btn-secondary" style="font-size: 12px; padding: 6px 12px;">📋 复制授权网址</button>
+            <div id="qrcodeDiv"
+              style="display: inline-block; background: white; padding: 12px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.4);">
+            </div>
+            <div id="qrCountdown" style="font-size: 12px; color: var(--text-muted); margin-top: 10px;">二维码有效中，等待微信扫码...
+            </div>
+            <div id="qrDirectLinks"
+              style="display: flex; gap: 8px; justify-content: center; margin-top: 10px; flex-wrap: wrap;">
+              <a id="qrOpenLink" href="#" target="_blank" class="btn btn-secondary"
+                style="font-size: 12px; padding: 6px 12px; text-decoration: none;">🔗 手机微信直接打开授权</a>
+              <button id="qrCopyBtn" type="button" class="btn btn-secondary"
+                style="font-size: 12px; padding: 6px 12px;">📋 复制授权网址</button>
             </div>
           </div>
         </div>
@@ -371,7 +530,8 @@
         <label class="input-label">通知内容（必填）</label>
         <textarea id="testText" class="input-textarea" placeholder="输入要发送到微信的通知内容..."></textarea>
       </div>
-      <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 14px; font-size: 13px; color: var(--text-muted);">
+      <div
+        style="display: flex; align-items: center; gap: 8px; margin-bottom: 14px; font-size: 13px; color: var(--text-muted);">
         <input type="checkbox" id="immediateCheck" />
         <label for="immediateCheck">跳过合批等待立即发送 (即时推送)</label>
       </div>
@@ -503,6 +663,71 @@
             fill.style.background = 'var(--warning)';
           } else {
             fill.style.background = 'var(--success)';
+          }
+        }
+
+        // 渲染定时提醒任务信息
+        if (data.reminder) {
+          const r = data.reminder;
+          document.getElementById('valTokenExpireBeijing').innerText = r.tokenExpireAtBeijing || '未获取';
+          document.getElementById('valNextReminderBeijing').innerText = r.nextReminderAtBeijing || (data.status === 'READY' ? '计算中' : '会话未激活');
+
+          const rBadge = document.getElementById('valReminderBadge');
+          if (r.isSent) {
+            rBadge.innerText = '已发送提醒 (等待微信回复)';
+            rBadge.style.background = 'rgba(245, 158, 11, 0.2)';
+            rBadge.style.color = '#fbbf24';
+            rBadge.style.borderColor = 'rgba(245, 158, 11, 0.3)';
+          } else if (r.hasActiveToken) {
+            rBadge.innerText = '守护中 (待到期提醒)';
+            rBadge.style.background = 'rgba(16, 185, 129, 0.2)';
+            rBadge.style.color = '#34d399';
+            rBadge.style.borderColor = 'rgba(16, 185, 129, 0.3)';
+          } else {
+            rBadge.innerText = '未激活';
+            rBadge.style.background = 'rgba(156, 163, 175, 0.2)';
+            rBadge.style.color = '#9ca3af';
+            rBadge.style.borderColor = 'rgba(156, 163, 175, 0.3)';
+          }
+
+          // 渲染到期前半小时 Webhook 任务状态
+          if (r.webhook) {
+            const w = r.webhook;
+            document.getElementById('valWebhookUrl').innerText = w.url || '-';
+            document.getElementById('valWebhookPlanTime').innerText = w.triggerAtBeijing || (data.status === 'READY' ? '计算中' : '会话未激活');
+            document.getElementById('valWebhookAuthStatus').innerText = w.authConfigured ? ('已配置 (' + w.maskedAuthHeader + ')') : '未配置秘钥';
+
+            const wBadge = document.getElementById('valWebhookBadge');
+            const resBox = document.getElementById('valWebhookExecResult');
+            const resDetail = document.getElementById('valWebhookExecDetail');
+
+            if (w.isTriggered) {
+              wBadge.innerText = '已触发执行 (HTTP ' + (w.lastStatus || 200) + ')';
+              wBadge.style.background = 'rgba(16, 185, 129, 0.2)';
+              wBadge.style.color = '#34d399';
+              wBadge.style.borderColor = 'rgba(16, 185, 129, 0.3)';
+              resBox.style.display = 'block';
+              resDetail.innerText = '已于 ' + w.triggeredAtBeijing + ' 成功执行';
+            } else if (w.lastError) {
+              wBadge.innerText = '执行异常';
+              wBadge.style.background = 'rgba(239, 68, 68, 0.2)';
+              wBadge.style.color = '#f87171';
+              wBadge.style.borderColor = 'rgba(239, 68, 68, 0.3)';
+              resBox.style.display = 'block';
+              resDetail.innerText = w.lastError;
+            } else if (data.status === 'READY') {
+              wBadge.innerText = '守护中 (到期前半小时)';
+              wBadge.style.background = 'rgba(139, 92, 246, 0.15)';
+              wBadge.style.color = '#a78bfa';
+              wBadge.style.borderColor = 'rgba(139, 92, 246, 0.3)';
+              resBox.style.display = 'none';
+            } else {
+              wBadge.innerText = '未激活';
+              wBadge.style.background = 'rgba(156, 163, 175, 0.2)';
+              wBadge.style.color = '#9ca3af';
+              wBadge.style.borderColor = 'rgba(156, 163, 175, 0.3)';
+              resBox.style.display = 'none';
+            }
           }
         }
 
@@ -693,6 +918,89 @@
       }
     }
 
+    async function testReminder(evt) {
+      if (!checkAuth()) return;
+      const btn = (evt && evt.target) ? evt.target : document.activeElement;
+      const oldText = btn.innerText;
+      btn.disabled = true;
+      btn.innerText = '正在发送提醒...';
+
+      try {
+        const res = await fetch(PREFIX + '/admin/test-reminder', {
+          method: 'POST',
+          headers: { 'X-API-Key': apiKey }
+        });
+        const data = await res.json();
+        if (data.success) {
+          alert('✓ ' + data.message);
+          checkState();
+        } else {
+          alert('发送提醒失败: ' + (data.error || '未知错误'));
+        }
+      } catch (err) {
+        alert('请求异常: ' + err.message);
+      } finally {
+        btn.disabled = false;
+        btn.innerText = oldText;
+      }
+    }
+
+    async function saveWebhookKey() {
+      if (!checkAuth()) return;
+      const key = document.getElementById('webhookKeyInput').value.trim();
+      if (!key) {
+        alert('请输入要配置的任务秘钥（例如 123456 ）');
+        return;
+      }
+      try {
+        const res = await fetch(PREFIX + '/admin/update-trigger-config', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-API-Key': apiKey
+          },
+          body: JSON.stringify({ key })
+        });
+        const data = await res.json();
+        if (data.success) {
+          alert('✓ 任务秘钥已成功更新并持久化！');
+          document.getElementById('webhookKeyInput').value = '';
+          checkState();
+        } else {
+          alert('保存失败: ' + (data.error || '未知错误'));
+        }
+      } catch (err) {
+        alert('请求异常: ' + err.message);
+      }
+    }
+
+    async function testTriggerWebhook(evt) {
+      if (!checkAuth()) return;
+      const btn = (evt && evt.target) ? evt.target : document.activeElement;
+      const oldText = btn.innerText;
+      btn.disabled = true;
+      btn.innerText = '正在触发...';
+
+      try {
+        const res = await fetch(PREFIX + '/admin/test-trigger-webhook', {
+          method: 'POST',
+          headers: { 'X-API-Key': apiKey }
+        });
+        const data = await res.json();
+        if (data.success) {
+          alert('✓ ' + data.message + '\n\n响应数据: ' + JSON.stringify(data.result?.data || data.result));
+          checkState();
+        } else {
+          alert('触发 Webhook 失败: ' + (data.error || '未知错误'));
+        }
+      } catch (err) {
+        alert('请求异常: ' + err.message);
+      } finally {
+        btn.disabled = false;
+        btn.innerText = oldText;
+      }
+    }
+
     async function confirmLogout() {
       if (!confirm('确定要解除当前微信账号的绑定吗？解除后需要重新扫码。')) return;
 
@@ -719,4 +1027,5 @@
     setInterval(checkState, 60000);
   </script>
 </body>
+
 </html>

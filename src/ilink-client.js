@@ -74,6 +74,7 @@ class MessageBatcher {
 function findContextToken(obj) {
   if (!obj || typeof obj !== 'object') return null;
   if (obj.context_token && typeof obj.context_token === 'string') return obj.context_token;
+  if (obj.contextToken && typeof obj.contextToken === 'string') return obj.contextToken;
   for (const k of Object.keys(obj)) {
     if (typeof obj[k] === 'object') {
       const found = findContextToken(obj[k]);
@@ -86,7 +87,8 @@ function findContextToken(obj) {
 // 递归查找对象内任意位置的 from_user_id
 function findFromUserId(obj) {
   if (!obj || typeof obj !== 'object') return null;
-  if (obj.from_user_id && typeof obj.from_user_id === 'string') return obj.from_user_id;
+  if (obj.from_user_id && typeof obj.from_user_id === 'string' && obj.from_user_id.trim()) return obj.from_user_id;
+  if (obj.fromUserId && typeof obj.fromUserId === 'string' && obj.fromUserId.trim()) return obj.fromUserId;
   for (const k of Object.keys(obj)) {
     if (typeof obj[k] === 'object') {
       const found = findFromUserId(obj[k]);
@@ -94,6 +96,15 @@ function findFromUserId(obj) {
     }
   }
   return null;
+}
+
+// 腾讯 iLink 接口异常状态判断（只有显式返回非 0 错误码时才算错误）
+function isIlinkError(data) {
+  if (!data || typeof data !== 'object') return false;
+  if (typeof data.ret === 'number' && data.ret !== 0) return true;
+  if (typeof data.errcode === 'number' && data.errcode !== 0) return true;
+  if (typeof data.retcode === 'number' && data.retcode !== 0) return true;
+  return false;
 }
 
 export class ILinkClient {
@@ -160,6 +171,7 @@ export class ILinkClient {
     return this.state.invalidationReason || '正常可用';
   }
 
+  // 官方 iLink 标准请求头（包含反重放 X-WECHAT-UIN 与 ClientVersion）
   _getHeaders() {
     const randomUin = Buffer.from(String(Math.floor(Math.random() * 4294967295))).toString('base64');
     const headers = {
@@ -167,12 +179,19 @@ export class ILinkClient {
       'AuthorizationType': 'ilink_bot_token',
       'X-WECHAT-UIN': randomUin,
       'iLink-App-Id': 'bot',
-      'iLink-App-ClientVersion': '1'
+      'iLink-App-ClientVersion': '132106' // 对齐 openclaw-weixin 2.4.10
     };
     if (this.state.botToken) {
       headers['Authorization'] = `Bearer ${this.state.botToken}`;
     }
     return headers;
+  }
+
+  _getBaseInfo() {
+    return {
+      channel_version: '2.4.10',
+      bot_agent: 'OpenClaw'
+    };
   }
 
   // 生成每条通知必带的保活状态签名：配额剩x条,有效x小时
@@ -213,7 +232,7 @@ export class ILinkClient {
     const res = await fetch(`${config.ilinkBaseUrl}/ilink/bot/get_qrcode_status?qrcode=${encodeURIComponent(qrcode)}`, {
       headers: {
         'Accept': 'application/json',
-        'iLink-App-ClientVersion': '1'
+        'iLink-App-ClientVersion': '132106'
       }
     });
     if (!res.ok) {
@@ -230,21 +249,103 @@ export class ILinkClient {
       this.state.contextTokenUsedCount = 0;
       this.state.contextTokenCreatedAt = null;
       this.state.contextTokenExpireAt = null;
-      this.state.invalidationReason = '已扫码完成，请在微信向 Bot 发送任意文本以获取激活 Token';
+      this.state.invalidationReason = '已扫码完成，请在手机微信向 Bot 发送任意文本（如发送 1）以满血激活';
       this.state.lastActiveTime = Date.now();
       storage.set(this.state);
       console.log(`[iLink] 微信扫码授权成功！BotId: ${this.state.botId}, UserId: ${this.state.userId}`);
 
+      // 立即触发上线声明并重启长轮询
+      this.notifyStart().catch(() => {});
       this.restartLongPolling();
     }
     return data;
   }
 
+  // 声明 Bot 在线生命周期（官方协议标准调用）
+  async notifyStart() {
+    if (!this.state.botToken) return;
+    try {
+      const res = await fetch(`${config.ilinkBaseUrl}/ilink/bot/msg/notifystart`, {
+        method: 'POST',
+        headers: this._getHeaders(),
+        body: JSON.stringify({ base_info: this._getBaseInfo() })
+      });
+      if (res.ok) {
+        const data = await res.json().catch(() => ({}));
+        console.log('[iLink] 客户端在线状态声明成功 (notifyStart):', data);
+      }
+    } catch (err) {
+      console.warn('[iLink] notifyStart 提醒:', err.message);
+    }
+  }
+
+  // 统一入站数据包解析处理器（长轮询与手动同步复用）
+  _processIncomingUpdates(data) {
+    if (!data || typeof data !== 'object') {
+      return { captured: false, count: 0 };
+    }
+
+    // 检查是否有显式业务异常错误码
+    if (isIlinkError(data)) {
+      const code = data.ret ?? data.errcode ?? data.retcode;
+      console.warn(`[iLink] getupdates 业务状态提示: code=${code}, errmsg=${data.errmsg || '无'}`);
+      if (code === -14) {
+        console.error('[iLink] 微信登录态已过期 (-14)，需重新扫码');
+        this.state.botToken = null;
+        this.state.invalidationReason = '微信登录态已过期 (-14)，需重新扫码';
+        storage.set(this.state);
+      }
+    }
+
+    let captured = false;
+    let count = 0;
+    let hasUpdated = false;
+
+    // 只要有 msgs 数组且长度大于 0，无视是否包含 ret 属性，直接解析 context_token
+    if (Array.isArray(data.msgs) && data.msgs.length > 0) {
+      count = data.msgs.length;
+      console.log(`[iLink] 收到 ${count} 条微信入站消息，正在解析 context_token...`);
+      for (const msg of data.msgs) {
+        const token = findContextToken(msg);
+        if (token) {
+          // 捕获用户在微信端的主动回复 -> 满血重置 10 条配额与 24 小时倒计时！
+          this.state.contextToken = token;
+          this.state.contextTokenUsedCount = 0; // 重置已用额度为 0
+          this.state.contextTokenCreatedAt = Date.now();
+          this.state.contextTokenExpireAt = Date.now() + 24 * 3600 * 1000; // 满血赋予 24 小时
+          this.state.invalidationReason = null;
+          captured = true;
+          hasUpdated = true;
+          console.log(`[iLink] ★★★ 成功捕获微信回复 context_token！10 条配额与 24 小时有效期已满血重置！网关状态已就绪 (READY)！★★★`);
+        }
+        const sender = findFromUserId(msg);
+        if (sender) {
+          this.state.userId = sender;
+          hasUpdated = true;
+        }
+      }
+    }
+
+    // 无论有无新消息，只要微信返回了新的游标 get_updates_buf，均记录更新
+    if (data.get_updates_buf && typeof data.get_updates_buf === 'string') {
+      this.state.syncBuf = data.get_updates_buf;
+      hasUpdated = true;
+    }
+
+    if (hasUpdated) {
+      this.state.lastActiveTime = Date.now();
+      storage.set(this.state);
+    }
+
+    return { captured, count };
+  }
+
   // 3. 启动后台长轮询保活回路
-  startLongPolling() {
+  async startLongPolling() {
     if (this.pollingActive || !this.state.botToken) return;
     this.pollingActive = true;
     console.log('[iLink] 启动消息长轮询保活回路...');
+    await this.notifyStart();
     this._runPollingLoop();
   }
 
@@ -278,7 +379,7 @@ export class ILinkClient {
           headers: this._getHeaders(),
           body: JSON.stringify({
             get_updates_buf: this.state.syncBuf || '',
-            base_info: { channel_version: '1.0.2' }
+            base_info: this._getBaseInfo()
           }),
           signal: this.abortController.signal
         });
@@ -300,48 +401,16 @@ export class ILinkClient {
         const data = await res.json();
         this.reconnectAttempts = 0;
 
-        if (data && data.ret !== 0) {
-          console.warn(`[iLink] getupdates 响应异常状态: ret=${data.ret}, errmsg=${data.errmsg || '无'}`);
-        }
+        // 统一入站消息提取与处理
+        this._processIncomingUpdates(data);
 
-        if (data && data.ret === 0) {
-          let hasUpdated = false;
-          if (data.get_updates_buf) {
-            this.state.syncBuf = data.get_updates_buf;
-            hasUpdated = true;
-          }
-          if (Array.isArray(data.msgs) && data.msgs.length > 0) {
-            for (const msg of data.msgs) {
-              const token = findContextToken(msg);
-              if (token) {
-                // 捕获用户在微信端的主动回复 -> 满血重置 10 条配额与 24 小时倒计时！
-                this.state.contextToken = token;
-                this.state.contextTokenUsedCount = 0; // 重置已用额度
-                this.state.contextTokenCreatedAt = Date.now();
-                this.state.contextTokenExpireAt = Date.now() + 24 * 3600 * 1000; // 重置 24 小时时效
-                this.state.invalidationReason = null;
-                hasUpdated = true;
-                console.log('[iLink] 成功捕获微信回复 context_token！10条配额与24小时有效期已满血重置！网关自动恢复为 READY 状态！');
-              }
-              const sender = findFromUserId(msg);
-              if (sender) {
-                this.state.userId = sender;
-                hasUpdated = true;
-              }
-            }
-          }
-          if (hasUpdated) {
-            this.state.lastActiveTime = Date.now();
-            storage.set(this.state);
-          }
-        }
       } catch (err) {
         clearTimeout(this.watchdogTimer);
 
         if (!this.pollingActive) break;
 
         if (err.name === 'AbortError') {
-          console.warn('[iLink] 轮询请求超出保活时限，看门狗正在刷新长连接...');
+          console.log('[iLink] 轮询周期切换或看门狗刷新连接...');
         } else {
           this.reconnectAttempts++;
           const backoff = Math.min(1000 * Math.pow(2, Math.min(this.reconnectAttempts, 5)), 30000);
@@ -392,7 +461,8 @@ export class ILinkClient {
         message_state: 2,
         context_token: this.state.contextToken,
         item_list: [{ type: 1, text_item: { text: finalContent } }]
-      }
+      },
+      base_info: this._getBaseInfo()
     };
 
     const res = await fetch(`${config.ilinkBaseUrl}/ilink/bot/sendmessage`, {
@@ -407,7 +477,7 @@ export class ILinkClient {
 
     const result = await res.json();
 
-    if (result.ret !== 0) {
+    if (result.ret !== 0 && result.ret !== undefined) {
       const errMsg = result.errmsg || '未知错误';
       // 捕获微信服务端流控/配额耗尽/Token 失效（常见 ret: -2 或 -1）
       if (result.ret === -2 || result.ret === -1 || /context|token|expire|quota|limit|freq/i.test(errMsg)) {
@@ -458,56 +528,50 @@ export class ILinkClient {
     return await this._sendRawMessage(combinedBody, combinedTitle);
   }
 
-  // 手动即时拉取一次微信入站更新（用于界面手动同步与排查）
+  // 手动即时拉取一次微信入站更新（用于界面手动同步与排查，带独占冲突避让与游标自动重置回溯）
   async fetchUpdatesOnce(resetCursor = false) {
     if (!this.state.botToken) throw new Error('尚未绑定微信 Bot，请先扫码');
 
-    if (resetCursor) {
-      this.state.syncBuf = '';
+    // 微信 iLink 采用独占长连接，先打断后台轮询以让出通信通道，避免两路 getupdates 冲突
+    if (this.abortController) {
+      try { this.abortController.abort(); } catch {}
     }
 
-    const res = await fetch(`${config.ilinkBaseUrl}/ilink/bot/getupdates`, {
-      method: 'POST',
-      headers: this._getHeaders(),
-      body: JSON.stringify({
-        get_updates_buf: this.state.syncBuf || '',
-        base_info: { channel_version: '1.0.2' }
-      })
-    });
+    let reqBuf = resetCursor ? '' : (this.state.syncBuf || '');
 
-    if (!res.ok) {
-      throw new Error(`getupdates 网络失败: HTTP ${res.status} ${res.statusText}`);
-    }
-
-    const data = await res.json();
-    let captured = false;
-
-    if (data && data.ret === 0) {
-      if (data.get_updates_buf) {
-        this.state.syncBuf = data.get_updates_buf;
+    const doFetch = async (buf) => {
+      const res = await fetch(`${config.ilinkBaseUrl}/ilink/bot/getupdates`, {
+        method: 'POST',
+        headers: this._getHeaders(),
+        body: JSON.stringify({
+          get_updates_buf: buf,
+          base_info: this._getBaseInfo()
+        })
+      });
+      if (!res.ok) {
+        throw new Error(`getupdates 网络失败: HTTP ${res.status} ${res.statusText}`);
       }
-      if (Array.isArray(data.msgs) && data.msgs.length > 0) {
-        for (const msg of data.msgs) {
-          const token = findContextToken(msg);
-          if (token) {
-            this.state.contextToken = token;
-            this.state.contextTokenUsedCount = 0;
-            this.state.contextTokenCreatedAt = Date.now();
-            this.state.contextTokenExpireAt = Date.now() + 24 * 3600 * 1000;
-            this.state.invalidationReason = null;
-            captured = true;
-          }
-          const sender = findFromUserId(msg);
-          if (sender) {
-            this.state.userId = sender;
-          }
-        }
-      }
-      this.state.lastActiveTime = Date.now();
-      storage.set(this.state);
+      return await res.json();
+    };
+
+    let data = await doFetch(reqBuf);
+    let { captured, count } = this._processIncomingUpdates(data);
+
+    // 双重回溯保底：如果当前没有 context_token 且带游标没拉到消息，自动使用初始游标二次回溯拉取历史未确认消息
+    if (!this.state.contextToken && count === 0 && reqBuf !== '') {
+      console.log('[iLink] 带游标未命中消息，自动使用空游标重置回溯拉取...');
+      data = await doFetch('');
+      const retryResult = this._processIncomingUpdates(data);
+      captured = retryResult.captured;
+      count = retryResult.count;
     }
 
-    return { data, captured };
+    // 短暂延迟后重新唤醒后台长轮询
+    setTimeout(() => {
+      this.startLongPolling();
+    }, 500);
+
+    return { data, captured, count };
   }
 
   // 5. 解绑注销

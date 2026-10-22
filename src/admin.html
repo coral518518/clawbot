@@ -670,7 +670,7 @@
       btn.innerText = '同步中...';
 
       try {
-        const res = await fetch(PREFIX + '/admin/sync-messages', {
+        const res = await fetch(PREFIX + '/admin/sync-messages?reset=1', {
           method: 'POST',
           headers: { 'X-API-Key': apiKey }
         });
@@ -679,7 +679,7 @@
           if (data.capturedToken || data.hasContextToken) {
             alert('✓ 同步成功！已捕获微信会话 Token，网关已满血就绪 (READY)！');
           } else {
-            alert('已向微信服务器完成拉取。\n接口反馈：ret=' + data.ret + '，收到入站消息：' + data.msgsCount + ' 条。\n\n提示：请确认您已在微信打开该 Bot 的聊天框发送文字（如发送 1）。发送后点击此按钮即可瞬间激活！');
+            alert('已向微信服务器完成拉取。\n收到入站消息：' + (data.msgsCount || 0) + ' 条。\n当前状态：' + data.status + '\n\n提示：请确认您已在微信打开该 Bot 的聊天框发送文字（如发送 1）。发送后点击此按钮即可瞬间激活！');
           }
           checkState();
         } else {

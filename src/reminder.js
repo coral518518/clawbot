@@ -346,7 +346,7 @@ export class TokenReminderService {
       return false;
     }
 
-    const targetUrl = config.triggerWebhookUrl || 'http://job.coral.cc.cd/api/trigger/tasks/5';
+    const targetUrl = config.triggerWebhookUrl || 'http://job.coral.cc.cd/api/trigger/tasks/6';
     const authHeader = formatTriggerAuthHeader(config.triggerAuthKey);
 
     const headers = {

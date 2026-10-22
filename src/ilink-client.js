@@ -139,7 +139,9 @@ export class ILinkClient {
     const headers = {
       'Content-Type': 'application/json',
       'AuthorizationType': 'ilink_bot_token',
-      'X-WECHAT-UIN': randomUin
+      'X-WECHAT-UIN': randomUin,
+      'iLink-App-Id': 'bot',
+      'iLink-App-ClientVersion': '1'
     };
     if (this.state.botToken) {
       headers['Authorization'] = `Bearer ${this.state.botToken}`;
@@ -272,6 +274,10 @@ export class ILinkClient {
         const data = await res.json();
         this.reconnectAttempts = 0;
 
+        if (data && data.ret !== 0) {
+          console.warn(`[iLink] getupdates 响应异常状态: ret=${data.ret}, errmsg=${data.errmsg || '无'}`);
+        }
+
         if (data && data.ret === 0) {
           let hasUpdated = false;
           if (data.get_updates_buf) {
@@ -279,19 +285,23 @@ export class ILinkClient {
             hasUpdated = true;
           }
           if (Array.isArray(data.msgs) && data.msgs.length > 0) {
+            console.log(`[iLink] getupdates 接收到 ${data.msgs.length} 条入站事件/消息，正在处理...`);
             for (const msg of data.msgs) {
-              if (msg.context_token) {
+              // 兼容 direct 或嵌套的 context_token
+              const token = msg.context_token || (msg.msg && msg.msg.context_token) || (msg.context && msg.context.context_token);
+              if (token) {
                 // 捕获用户在微信端的主动回复 -> 满血重置 10 条配额与 24 小时倒计时！
-                this.state.contextToken = msg.context_token;
+                this.state.contextToken = token;
                 this.state.contextTokenUsedCount = 0; // 重置已用额度
                 this.state.contextTokenCreatedAt = Date.now();
                 this.state.contextTokenExpireAt = Date.now() + 24 * 3600 * 1000; // 重置 24 小时时效
                 this.state.invalidationReason = null;
                 hasUpdated = true;
-                console.log('[iLink] 捕获到用户微信回复！10条配额与24小时有效期已满血重置！网关自动恢复为 READY 状态！');
+                console.log('[iLink] 成功捕获微信回复 context_token！10条配额与24小时有效期已满血重置！网关自动恢复为 READY 状态！');
               }
-              if (msg.from_user_id) {
-                this.state.userId = msg.from_user_id;
+              const sender = msg.from_user_id || (msg.msg && msg.msg.from_user_id);
+              if (sender) {
+                this.state.userId = sender;
                 hasUpdated = true;
               }
             }

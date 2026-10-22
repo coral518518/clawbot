@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ClawBot 微信纯通知网关管理控制台</title>
+  <script data-cfasync="false" src="https://lib.baomitu.com/qrcodejs/1.0.0/qrcode.min.js"></script>
   <style>
     :root {
       --bg: #0b0f19;
@@ -342,8 +343,12 @@
         <div class="qrcode-wrapper">
           <div id="qrPlaceholder" style="font-size: 13px; color: var(--text-muted); text-align: center;">点击下方按钮获取微信扫码授权二维码</div>
           <div id="qrcodeImgBox" style="display: none; text-align: center;">
-            <img id="qrcodeImg" src="" alt="WeChat Login QR" />
-            <div id="qrCountdown" style="font-size: 12px; color: var(--text-muted); margin-top: 8px;">二维码有效中，等待微信扫码...</div>
+            <div id="qrcodeDiv" style="display: inline-block; background: white; padding: 12px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.4);"></div>
+            <div id="qrCountdown" style="font-size: 12px; color: var(--text-muted); margin-top: 10px;">二维码有效中，等待微信扫码...</div>
+            <div id="qrDirectLinks" style="display: flex; gap: 8px; justify-content: center; margin-top: 10px; flex-wrap: wrap;">
+              <a id="qrOpenLink" href="#" target="_blank" class="btn btn-secondary" style="font-size: 12px; padding: 6px 12px; text-decoration: none;">🔗 手机微信直接打开授权</a>
+              <button id="qrCopyBtn" type="button" class="btn btn-secondary" style="font-size: 12px; padding: 6px 12px;">📋 复制授权网址</button>
+            </div>
           </div>
         </div>
         <button id="getQrBtn" class="btn btn-block" onclick="initLogin()">获取微信绑定二维码</button>
@@ -526,8 +531,10 @@
       const btn = document.getElementById('getQrBtn');
       const placeholder = document.getElementById('qrPlaceholder');
       const imgBox = document.getElementById('qrcodeImgBox');
-      const qrImg = document.getElementById('qrcodeImg');
       const countdown = document.getElementById('qrCountdown');
+      const qrDiv = document.getElementById('qrcodeDiv');
+      const openLink = document.getElementById('qrOpenLink');
+      const copyBtn = document.getElementById('qrCopyBtn');
 
       btn.disabled = true;
       btn.innerText = '正在生成二维码...';
@@ -543,7 +550,27 @@
           throw new Error(data.error || '获取二维码响应异常');
         }
 
-        qrImg.src = data.qrcode_img_content;
+        const qrUrl = data.qrcode_img_content;
+        openLink.href = qrUrl;
+        copyBtn.onclick = () => {
+          navigator.clipboard.writeText(qrUrl);
+          alert('已复制微信授权网址！发到手机微信聊天框中点击即可直接授权。');
+        };
+
+        qrDiv.innerHTML = '';
+        if (typeof QRCode !== 'undefined') {
+          new QRCode(qrDiv, {
+            text: qrUrl,
+            width: 200,
+            height: 200,
+            colorDark: '#000000',
+            colorLight: '#ffffff',
+            correctLevel: QRCode.CorrectLevel.M
+          });
+        } else {
+          qrDiv.innerHTML = '<img src="https://api.qrserver.com/v1/create-qr-code/?size=200x200&margin=8&data=' + encodeURIComponent(qrUrl) + '" style="max-width:200px; border-radius:4px;" alt="QR Code" />';
+        }
+
         placeholder.style.display = 'none';
         imgBox.style.display = 'block';
         btn.innerText = '重新生成二维码';
@@ -656,7 +683,8 @@
     }
     updateSnippets();
     checkState();
-    setInterval(checkState, 6000);
+    // 状态定期轮询：1 分钟请求一次
+    setInterval(checkState, 60000);
   </script>
 </body>
 </html>

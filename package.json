@@ -1,0 +1,27 @@
+{
+  "name": "clawbot-notifier",
+  "version": "1.0.0",
+  "description": "微信 ClawBot 纯通知网关服务 (WeChat Notification Gateway)",
+  "type": "module",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js"
+  },
+  "keywords": [
+    "wechat",
+    "clawbot",
+    "notification",
+    "webhook",
+    "push"
+  ],
+  "author": "coral518518",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.21.2",
+    "express-rate-limit": "^7.5.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

@@ -1,0 +1,662 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ClawBot 微信纯通知网关管理控制台</title>
+  <style>
+    :root {
+      --bg: #0b0f19;
+      --card-bg: rgba(22, 30, 49, 0.85);
+      --card-border: rgba(255, 255, 255, 0.08);
+      --text: #f3f4f6;
+      --text-muted: #9ca3af;
+      --accent: #3b82f6;
+      --accent-hover: #2563eb;
+      --success: #10b981;
+      --warning: #f59e0b;
+      --danger: #ef4444;
+      --font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font-family);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 30px 16px;
+      line-height: 1.6;
+    }
+    .container {
+      width: 100%;
+      max-width: 680px;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--card-border);
+      padding-bottom: 16px;
+    }
+    .header h1 {
+      font-size: 20px;
+      font-weight: 700;
+      letter-spacing: -0.5px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      border-radius: 9999px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .badge-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+    }
+    .badge-READY { background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.3); }
+    .badge-READY .badge-dot { background: #10b981; box-shadow: 0 0 8px #10b981; }
+    .badge-WAITING_CONTEXT { background: rgba(245, 158, 11, 0.15); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.3); }
+    .badge-WAITING_CONTEXT .badge-dot { background: #f59e0b; box-shadow: 0 0 8px #f59e0b; }
+    .badge-UNPAIRED { background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.3); }
+    .badge-UNPAIRED .badge-dot { background: #ef4444; }
+
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      backdrop-filter: blur(12px);
+      border-radius: 12px;
+      padding: 24px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+    }
+    .card h2 {
+      font-size: 16px;
+      font-weight: 600;
+      margin-bottom: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .tip-box {
+      background: rgba(255, 255, 255, 0.04);
+      border-left: 3px solid var(--accent);
+      padding: 12px 14px;
+      border-radius: 0 6px 6px 0;
+      font-size: 13px;
+      color: #d1d5db;
+      margin-bottom: 16px;
+    }
+    .tip-box code {
+      background: rgba(255, 255, 255, 0.1);
+      padding: 2px 6px;
+      border-radius: 4px;
+      color: #93c5fd;
+      font-family: monospace;
+    }
+    .quota-container {
+      background: rgba(0, 0, 0, 0.25);
+      border: 1px solid rgba(255, 255, 255, 0.06);
+      border-radius: 8px;
+      padding: 14px;
+      margin-bottom: 16px;
+    }
+    .quota-header {
+      display: flex;
+      justify-content: space-between;
+      font-size: 13px;
+      margin-bottom: 8px;
+    }
+    .progress-bar-bg {
+      background: rgba(255, 255, 255, 0.1);
+      height: 8px;
+      border-radius: 4px;
+      overflow: hidden;
+    }
+    .progress-bar-fill {
+      height: 100%;
+      background: var(--success);
+      width: 100%;
+      transition: width 0.3s, background 0.3s;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      padding: 10px 18px;
+      background: var(--accent);
+      color: #ffffff;
+      border: none;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      text-decoration: none;
+    }
+    .btn:hover { background: var(--accent-hover); }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-secondary {
+      background: rgba(255, 255, 255, 0.08);
+      color: #e5e7eb;
+    }
+    .btn-secondary:hover { background: rgba(255, 255, 255, 0.14); }
+    .btn-danger {
+      background: rgba(239, 68, 68, 0.2);
+      color: #fca5a5;
+      border: 1px solid rgba(239, 68, 68, 0.3);
+    }
+    .btn-danger:hover { background: rgba(239, 68, 68, 0.35); }
+    .btn-block { width: 100%; }
+
+    .qrcode-wrapper {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 220px;
+      background: rgba(0, 0, 0, 0.2);
+      border-radius: 10px;
+      border: 1px dashed rgba(255, 255, 255, 0.1);
+      padding: 20px;
+      margin: 16px 0;
+    }
+    .qrcode-wrapper img {
+      max-width: 200px;
+      border-radius: 8px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+      background: white;
+      padding: 8px;
+    }
+    .info-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+    @media (max-width: 480px) {
+      .info-grid { grid-template-columns: 1fr; }
+    }
+    .info-item {
+      background: rgba(0, 0, 0, 0.2);
+      padding: 10px 14px;
+      border-radius: 6px;
+      border: 1px solid rgba(255, 255, 255, 0.04);
+    }
+    .info-label {
+      font-size: 11px;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .info-value {
+      font-size: 13px;
+      font-family: monospace;
+      font-weight: 600;
+      margin-top: 4px;
+      word-break: break-all;
+    }
+    .input-group {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin-bottom: 12px;
+    }
+    .input-label {
+      font-size: 13px;
+      color: var(--text-muted);
+    }
+    .input-text, .input-textarea {
+      width: 100%;
+      background: rgba(0, 0, 0, 0.3);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 6px;
+      padding: 10px 12px;
+      color: #fff;
+      font-size: 14px;
+      outline: none;
+      transition: border 0.2s;
+    }
+    .input-text:focus, .input-textarea:focus {
+      border-color: var(--accent);
+    }
+    .input-textarea {
+      resize: vertical;
+      min-height: 70px;
+    }
+    .code-block {
+      background: #060911;
+      border: 1px solid rgba(255, 255, 255, 0.06);
+      border-radius: 6px;
+      padding: 12px;
+      font-family: monospace;
+      font-size: 12px;
+      color: #e2e8f0;
+      overflow-x: auto;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+    .feedback-msg {
+      padding: 10px 14px;
+      border-radius: 6px;
+      font-size: 13px;
+      margin-top: 10px;
+      display: none;
+    }
+    .feedback-success { background: rgba(16, 185, 129, 0.2); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.3); }
+    .feedback-error { background: rgba(239, 68, 68, 0.2); color: #fca5a5; border: 1px solid rgba(239, 68, 68, 0.3); }
+
+    .modal-overlay {
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0,0,0,0.8);
+      backdrop-filter: blur(8px);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      z-index: 1000;
+    }
+    .modal-card {
+      background: #151c2e;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 12px;
+      max-width: 420px;
+      width: 100%;
+      padding: 24px;
+      box-shadow: 0 12px 36px rgba(0,0,0,0.6);
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <!-- 顶栏 -->
+    <div class="header">
+      <h1>
+        <span>🤖</span>
+        <span>ClawBot 微信纯通知网关</span>
+      </h1>
+      <div id="statusBadge" class="badge badge-UNPAIRED">
+        <span class="badge-dot"></span>
+        <span id="statusBadgeText">检查状态中...</span>
+      </div>
+    </div>
+
+    <!-- 1. 网关状态 & 扫码卡片 -->
+    <div class="card">
+      <h2>
+        <span>配对与连接状态</span>
+        <div style="display: flex; gap: 8px;">
+          <button class="btn btn-secondary" onclick="checkState()" style="padding: 6px 12px; font-size: 12px;">刷新</button>
+          <button class="btn btn-danger" onclick="confirmLogout()" style="padding: 6px 12px; font-size: 12px;">解除绑定</button>
+        </div>
+      </h2>
+
+      <!-- 配额与时效实时监视卡 -->
+      <div class="quota-container">
+        <div class="quota-header">
+          <span><strong>推送配额：</strong><span id="quotaText">- / 10 条</span></span>
+          <span><strong>有效期倒计时：</strong><span id="expireHoursText">- 小时</span></span>
+        </div>
+        <div class="progress-bar-bg">
+          <div id="quotaFill" class="progress-bar-fill"></div>
+        </div>
+      </div>
+
+      <div id="tipBox" class="tip-box">正在加载服务与配对状态...</div>
+
+      <div class="info-grid">
+        <div class="info-item">
+          <div class="info-label">Bot ID</div>
+          <div id="valBotId" class="info-value">-</div>
+        </div>
+        <div class="info-item">
+          <div class="info-label">微信 User ID</div>
+          <div id="valUserId" class="info-value">-</div>
+        </div>
+        <div class="info-item">
+          <div class="info-label">会话状态流转</div>
+          <div id="valContext" class="info-value">-</div>
+        </div>
+        <div class="info-item">
+          <div class="info-label">最后交互时间</div>
+          <div id="valLastActive" class="info-value">-</div>
+        </div>
+      </div>
+
+      <!-- 二维码显示区 -->
+      <div id="qrSection" style="display: none;">
+        <div class="qrcode-wrapper">
+          <div id="qrPlaceholder" style="font-size: 13px; color: var(--text-muted); text-align: center;">点击下方按钮获取微信扫码授权二维码</div>
+          <div id="qrcodeImgBox" style="display: none; text-align: center;">
+            <img id="qrcodeImg" src="" alt="WeChat Login QR" />
+            <div id="qrCountdown" style="font-size: 12px; color: var(--text-muted); margin-top: 8px;">二维码有效中，等待微信扫码...</div>
+          </div>
+        </div>
+        <button id="getQrBtn" class="btn btn-block" onclick="initLogin()">获取微信绑定二维码</button>
+      </div>
+    </div>
+
+    <!-- 2. 发送测试通知卡片 -->
+    <div class="card">
+      <h2><span>通知推送测试台</span></h2>
+      <div class="tip-box">
+        每条推送均会自动带上签名：<code>📌 配额剩x条，有效x小时</code>。<br>
+        已启用智能合批功能：{{BATCH_WINDOW_MS}}ms 内的连续多次推送将自动合并为 1 条微信消息发送，仅消耗 1 次额度！
+      </div>
+      <div class="input-group">
+        <label class="input-label">通知标题（可选）</label>
+        <input id="testTitle" class="input-text" type="text" placeholder="例如：服务器报警 / 编译完成" />
+      </div>
+      <div class="input-group">
+        <label class="input-label">通知内容（必填）</label>
+        <textarea id="testText" class="input-textarea" placeholder="输入要发送到微信的通知内容..."></textarea>
+      </div>
+      <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 14px; font-size: 13px; color: var(--text-muted);">
+        <input type="checkbox" id="immediateCheck" />
+        <label for="immediateCheck">跳过合批等待立即发送 (即时推送)</label>
+      </div>
+      <button id="sendBtn" class="btn btn-block" onclick="sendTestMessage()">发送测试通知</button>
+      <div id="sendFeedback" class="feedback-msg"></div>
+    </div>
+
+    <!-- 3. API 调用示例卡片 -->
+    <div class="card">
+      <h2><span>接口调用与集成指南</span></h2>
+      <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 12px;">
+        所有接口均在 <code>{{ROUTE_PREFIX}}</code> 前缀下，支持普通推送、立即发送与多条数组合并推送：
+      </p>
+
+      <div class="code-block" id="curlSnippet">正在生成调用示例...</div>
+    </div>
+  </div>
+
+  <!-- 鉴权密钥输入弹窗 -->
+  <div id="authModal" class="modal-overlay">
+    <div class="modal-card">
+      <h3 style="margin-bottom: 8px; font-size: 16px;">🔑 安全身份验证</h3>
+      <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 16px;">
+        当前管理页面受 API Key 保护。请输入你的私人安全密钥继续访问。
+      </p>
+      <div class="input-group">
+        <input id="keyInput" class="input-text" type="password" placeholder="输入 API_KEY" />
+      </div>
+      <div style="display: flex; gap: 10px; margin-top: 14px;">
+        <button class="btn btn-block" onclick="saveApiKey()">验证并进入</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- data-cfasync="false" 阻止 Cloudflare Rocket Loader 篡改此脚本执行时序 -->
+  <script data-cfasync="false">
+    const PREFIX = '{{ROUTE_PREFIX}}';
+    let apiKey = new URLSearchParams(window.location.search).get('api_key') || localStorage.getItem('clawbot_api_key') || '';
+    let pollTimer = null;
+
+    function checkAuth() {
+      if (!apiKey) {
+        document.getElementById('authModal').style.display = 'flex';
+        return false;
+      }
+      return true;
+    }
+
+    function saveApiKey() {
+      const input = document.getElementById('keyInput').value.trim();
+      if (!input) {
+        alert('请输入有效的 API Key');
+        return;
+      }
+      apiKey = input;
+      localStorage.setItem('clawbot_api_key', apiKey);
+      document.getElementById('authModal').style.display = 'none';
+      checkState();
+      updateSnippets();
+    }
+
+    function updateSnippets() {
+      const host = window.location.origin;
+      const key = apiKey || 'YOUR_API_KEY';
+      const snippet = [
+        '# 1. cURL POST 推送 (自动合批防风暴)',
+        'curl -X POST "' + host + PREFIX + '/api/send" \\',
+        '  -H "Content-Type: application/json" \\',
+        '  -H "X-API-Key: ' + key + '" \\',
+        '  -d \'{"title": "服务告警", "text": "CPU 使用率已超过 90%"}\'',
+        '',
+        '# 2. cURL POST 立即发送 (跳过合批等待)',
+        'curl -X POST "' + host + PREFIX + '/api/send" \\',
+        '  -H "Content-Type: application/json" \\',
+        '  -H "X-API-Key: ' + key + '" \\',
+        '  -d \'{"text": "紧急安全事件", "immediate": true}\'',
+        '',
+        '# 3. 数组显式合并推送 (N条合并为1条，省额度)',
+        'curl -X POST "' + host + PREFIX + '/api/send" \\',
+        '  -H "Content-Type: application/json" \\',
+        '  -H "X-API-Key: ' + key + '" \\',
+        '  -d \'{"title": "巡检汇总", "messages": ["磁盘 45%", "内存 60%", "网络良好"]}\'',
+        '',
+        '# 4. 简易 GET Webhook 推送 (供 Uptime Kuma/路由器调用)',
+        'curl "' + host + PREFIX + '/api/send?api_key=' + key + '&text=Hello%20Clawbot"'
+      ].join('\n');
+      document.getElementById('curlSnippet').innerText = snippet;
+    }
+
+    async function checkState() {
+      if (!checkAuth()) return;
+
+      try {
+        const res = await fetch(PREFIX + '/api/status', {
+          headers: { 'X-API-Key': apiKey }
+        });
+
+        if (res.status === 401) {
+          localStorage.removeItem('clawbot_api_key');
+          apiKey = '';
+          document.getElementById('authModal').style.display = 'flex';
+          return;
+        }
+
+        const data = await res.json();
+        const badge = document.getElementById('statusBadge');
+        const badgeText = document.getElementById('statusBadgeText');
+        const tipBox = document.getElementById('tipBox');
+        const qrSection = document.getElementById('qrSection');
+
+        badge.className = 'badge badge-' + data.status;
+        document.getElementById('valBotId').innerText = data.botId || '未分配';
+        document.getElementById('valUserId').innerText = data.userId || '未获取';
+        document.getElementById('valLastActive').innerText = data.lastActiveTime ? new Date(data.lastActiveTime).toLocaleString() : '无记录';
+
+        if (data.quota) {
+          const used = data.quota.used || 0;
+          const total = data.quota.total || 10;
+          const remaining = data.quota.remaining;
+          document.getElementById('quotaText').innerText = '剩余 ' + remaining + ' / ' + total + ' 条 (已用 ' + used + ')';
+          document.getElementById('expireHoursText').innerText = data.expireRemainingHours > 0 ? (data.expireRemainingHours + ' 小时') : '已过期';
+
+          const pct = Math.max(0, Math.min(100, (remaining / total) * 100));
+          const fill = document.getElementById('quotaFill');
+          fill.style.width = pct + '%';
+          if (remaining <= 1) {
+            fill.style.background = 'var(--danger)';
+          } else if (remaining <= 3) {
+            fill.style.background = 'var(--warning)';
+          } else {
+            fill.style.background = 'var(--success)';
+          }
+        }
+
+        if (data.status === 'READY') {
+          badgeText.innerText = '服务就绪 (READY)';
+          tipBox.innerHTML = '● <strong>网关处于完全就绪状态！</strong><br>微信推送链路通畅，每条通知均会自动携带保活签名。可直接调用 <code>' + PREFIX + '/api/send</code>。';
+          document.getElementById('valContext').innerText = '就绪 (剩余 ' + data.quota.remaining + ' 条)';
+          qrSection.style.display = 'none';
+        } else if (data.status === 'WAITING_CONTEXT') {
+          badgeText.innerText = '待激活 (WAITING_CONTEXT)';
+          const reason = data.invalidationDetail || '会话凭据失效';
+          tipBox.innerHTML = '▲ <strong>会话已自动流转为待激活状态！</strong><br>原因：<code>' + reason + '</code><br>👉 <strong>解决方式：</strong>请现在用手机微信打开该 Bot 聊天框，<strong>回复任意内容（如回复 1）</strong>即可瞬间满血恢复 10 条配额与 24 小时！';
+          document.getElementById('valContext').innerText = '已暂停 (' + reason + ')';
+          qrSection.style.display = 'none';
+        } else {
+          badgeText.innerText = '未绑定 (UNPAIRED)';
+          tipBox.innerHTML = '× <strong>当前未绑定任何微信 Bot。</strong> 请点击下方按钮获取二维码，并使用微信 App 扫码配对。';
+          document.getElementById('valContext').innerText = '未初始化';
+          qrSection.style.display = 'block';
+        }
+      } catch (err) {
+        console.error('检查状态异常:', err);
+      }
+    }
+
+    async function initLogin() {
+      const btn = document.getElementById('getQrBtn');
+      const placeholder = document.getElementById('qrPlaceholder');
+      const imgBox = document.getElementById('qrcodeImgBox');
+      const qrImg = document.getElementById('qrcodeImg');
+      const countdown = document.getElementById('qrCountdown');
+
+      btn.disabled = true;
+      btn.innerText = '正在生成二维码...';
+      placeholder.style.display = 'block';
+      placeholder.innerText = '正在向微信 iLink 请求配对二维码...';
+      imgBox.style.display = 'none';
+
+      try {
+        const res = await fetch(PREFIX + '/admin/get-qrcode?api_key=' + encodeURIComponent(apiKey));
+        const data = await res.json();
+
+        if (!data.qrcode_img_content) {
+          throw new Error(data.error || '获取二维码响应异常');
+        }
+
+        qrImg.src = data.qrcode_img_content;
+        placeholder.style.display = 'none';
+        imgBox.style.display = 'block';
+        btn.innerText = '重新生成二维码';
+        btn.disabled = false;
+
+        clearInterval(pollTimer);
+        let pollCount = 0;
+
+        pollTimer = setInterval(async () => {
+          pollCount++;
+          if (pollCount > 90) {
+            clearInterval(pollTimer);
+            countdown.innerText = '二维码已过期，请重新点击生成';
+            return;
+          }
+
+          try {
+            const sRes = await fetch(PREFIX + '/admin/check-qrcode?qrcode=' + encodeURIComponent(data.qrcode) + '&api_key=' + encodeURIComponent(apiKey));
+            const sData = await sRes.json();
+
+            if (sData.status === 'confirmed') {
+              clearInterval(pollTimer);
+              countdown.innerText = '✓ 扫码授权成功！正在刷新网关状态...';
+              setTimeout(checkState, 800);
+            } else if (sData.status === 'scanned') {
+              countdown.innerText = '✓ 手机已扫描，请在手机上点击“确认登录”...';
+            } else {
+              countdown.innerText = '等待微信扫码确认 (' + (90 - pollCount) * 2 + 's)...';
+            }
+          } catch (e) {
+            console.error('轮询扫码状态失败:', e);
+          }
+        }, 2000);
+
+      } catch (err) {
+        placeholder.innerText = '获取二维码失败: ' + err.message;
+        btn.disabled = false;
+        btn.innerText = '重试获取二维码';
+      }
+    }
+
+    async function sendTestMessage() {
+      const title = document.getElementById('testTitle').value.trim();
+      const text = document.getElementById('testText').value.trim();
+      const immediate = document.getElementById('immediateCheck').checked;
+      const feedback = document.getElementById('sendFeedback');
+      const btn = document.getElementById('sendBtn');
+
+      if (!text) {
+        feedback.className = 'feedback-msg feedback-error';
+        feedback.innerText = '通知内容不能为空';
+        feedback.style.display = 'block';
+        return;
+      }
+
+      btn.disabled = true;
+      btn.innerText = '正在发送中...';
+      feedback.style.display = 'none';
+
+      try {
+        const res = await fetch(PREFIX + '/api/send', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-API-Key': apiKey
+          },
+          body: JSON.stringify({ title, text, immediate })
+        });
+
+        const data = await res.json();
+        if (res.ok && data.success) {
+          feedback.className = 'feedback-msg feedback-success';
+          const modeInfo = data.batched ? (' [已合批 ' + data.batchCount + ' 条]') : '';
+          feedback.innerText = '✓ 微信通知推送成功！' + modeInfo + ' (剩余配额: ' + (data.quota ? data.quota.remaining : '-') + ' 条)';
+          checkState();
+        } else {
+          feedback.className = 'feedback-msg feedback-error';
+          feedback.innerText = '× 推送失败: ' + (data.error || '未知错误');
+          checkState();
+        }
+      } catch (err) {
+        feedback.className = 'feedback-msg feedback-error';
+        feedback.innerText = '× 请求异常: ' + err.message;
+      } finally {
+        feedback.style.display = 'block';
+        btn.disabled = false;
+        btn.innerText = '发送测试通知';
+      }
+    }
+
+    async function confirmLogout() {
+      if (!confirm('确定要解除当前微信账号的绑定吗？解除后需要重新扫码。')) return;
+
+      try {
+        const res = await fetch(PREFIX + '/admin/logout', {
+          method: 'POST',
+          headers: { 'X-API-Key': apiKey }
+        });
+        const data = await res.json();
+        alert(data.message || '已解绑');
+        checkState();
+      } catch (err) {
+        alert('解绑失败: ' + err.message);
+      }
+    }
+
+    // 初始化
+    if (apiKey) {
+      localStorage.setItem('clawbot_api_key', apiKey);
+    }
+    updateSnippets();
+    checkState();
+    setInterval(checkState, 6000);
+  </script>
+</body>
+</html>

@@ -68,6 +68,30 @@ class MessageBatcher {
       }
     }
   }
+// 递归查找对象内任意位置的 context_token
+function findContextToken(obj) {
+  if (!obj || typeof obj !== 'object') return null;
+  if (obj.context_token && typeof obj.context_token === 'string') return obj.context_token;
+  for (const k of Object.keys(obj)) {
+    if (typeof obj[k] === 'object') {
+      const found = findContextToken(obj[k]);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+// 递归查找对象内任意位置的 from_user_id
+function findFromUserId(obj) {
+  if (!obj || typeof obj !== 'object') return null;
+  if (obj.from_user_id && typeof obj.from_user_id === 'string') return obj.from_user_id;
+  for (const k of Object.keys(obj)) {
+    if (typeof obj[k] === 'object') {
+      const found = findFromUserId(obj[k]);
+      if (found) return found;
+    }
+  }
+  return null;
 }
 
 export class ILinkClient {
@@ -285,10 +309,8 @@ export class ILinkClient {
             hasUpdated = true;
           }
           if (Array.isArray(data.msgs) && data.msgs.length > 0) {
-            console.log(`[iLink] getupdates 接收到 ${data.msgs.length} 条入站事件/消息，正在处理...`);
             for (const msg of data.msgs) {
-              // 兼容 direct 或嵌套的 context_token
-              const token = msg.context_token || (msg.msg && msg.msg.context_token) || (msg.context && msg.context.context_token);
+              const token = findContextToken(msg);
               if (token) {
                 // 捕获用户在微信端的主动回复 -> 满血重置 10 条配额与 24 小时倒计时！
                 this.state.contextToken = token;
@@ -299,7 +321,7 @@ export class ILinkClient {
                 hasUpdated = true;
                 console.log('[iLink] 成功捕获微信回复 context_token！10条配额与24小时有效期已满血重置！网关自动恢复为 READY 状态！');
               }
-              const sender = msg.from_user_id || (msg.msg && msg.msg.from_user_id);
+              const sender = findFromUserId(msg);
               if (sender) {
                 this.state.userId = sender;
                 hasUpdated = true;
@@ -432,6 +454,58 @@ export class ILinkClient {
     }).join('\n\n');
 
     return await this._sendRawMessage(combinedBody, combinedTitle);
+  }
+
+  // 手动即时拉取一次微信入站更新（用于界面手动同步与排查）
+  async fetchUpdatesOnce(resetCursor = false) {
+    if (!this.state.botToken) throw new Error('尚未绑定微信 Bot，请先扫码');
+
+    if (resetCursor) {
+      this.state.syncBuf = '';
+    }
+
+    const res = await fetch(`${config.ilinkBaseUrl}/ilink/bot/getupdates`, {
+      method: 'POST',
+      headers: this._getHeaders(),
+      body: JSON.stringify({
+        get_updates_buf: this.state.syncBuf || '',
+        base_info: { channel_version: '1.0.2' }
+      })
+    });
+
+    if (!res.ok) {
+      throw new Error(`getupdates 网络失败: HTTP ${res.status} ${res.statusText}`);
+    }
+
+    const data = await res.json();
+    let captured = false;
+
+    if (data && data.ret === 0) {
+      if (data.get_updates_buf) {
+        this.state.syncBuf = data.get_updates_buf;
+      }
+      if (Array.isArray(data.msgs) && data.msgs.length > 0) {
+        for (const msg of data.msgs) {
+          const token = findContextToken(msg);
+          if (token) {
+            this.state.contextToken = token;
+            this.state.contextTokenUsedCount = 0;
+            this.state.contextTokenCreatedAt = Date.now();
+            this.state.contextTokenExpireAt = Date.now() + 24 * 3600 * 1000;
+            this.state.invalidationReason = null;
+            captured = true;
+          }
+          const sender = findFromUserId(msg);
+          if (sender) {
+            this.state.userId = sender;
+          }
+        }
+      }
+      this.state.lastActiveTime = Date.now();
+      storage.set(this.state);
+    }
+
+    return { data, captured };
   }
 
   // 5. 解绑注销

@@ -302,6 +302,7 @@
         <span>配对与连接状态</span>
         <div style="display: flex; gap: 8px;">
           <button class="btn btn-secondary" onclick="checkState()" style="padding: 6px 12px; font-size: 12px;">刷新</button>
+          <button class="btn btn-secondary" onclick="manualSync(event)" style="padding: 6px 12px; font-size: 12px;">同步微信消息</button>
           <button class="btn btn-danger" onclick="confirmLogout()" style="padding: 6px 12px; font-size: 12px;">解除绑定</button>
         </div>
       </h2>
@@ -658,6 +659,37 @@
         feedback.style.display = 'block';
         btn.disabled = false;
         btn.innerText = '发送测试通知';
+      }
+    }
+
+    async function manualSync(evt) {
+      if (!checkAuth()) return;
+      const btn = (evt && evt.target) ? evt.target : document.activeElement;
+      const oldText = btn.innerText;
+      btn.disabled = true;
+      btn.innerText = '同步中...';
+
+      try {
+        const res = await fetch(PREFIX + '/admin/sync-messages', {
+          method: 'POST',
+          headers: { 'X-API-Key': apiKey }
+        });
+        const data = await res.json();
+        if (data.success) {
+          if (data.capturedToken || data.hasContextToken) {
+            alert('✓ 同步成功！已捕获微信会话 Token，网关已满血就绪 (READY)！');
+          } else {
+            alert('已向微信服务器完成拉取。\n接口反馈：ret=' + data.ret + '，收到入站消息：' + data.msgsCount + ' 条。\n\n提示：请确认您已在微信打开该 Bot 的聊天框发送文字（如发送 1）。发送后点击此按钮即可瞬间激活！');
+          }
+          checkState();
+        } else {
+          alert('同步失败: ' + (data.error || '未知错误'));
+        }
+      } catch (e) {
+        alert('请求异常: ' + e.message);
+      } finally {
+        btn.disabled = false;
+        btn.innerText = oldText;
       }
     }
 

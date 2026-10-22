@@ -187,6 +187,24 @@ router.get('/admin/check-qrcode', requireApiKey, async (req, res) => {
   }
 });
 
+router.post('/admin/sync-messages', requireApiKey, async (req, res) => {
+  try {
+    const reset = Boolean(req.query.reset === '1' || req.body?.reset);
+    const { data, captured } = await iLink.fetchUpdatesOnce(reset);
+    res.json({
+      success: true,
+      capturedToken: captured,
+      status: iLink.statusDescription,
+      hasContextToken: Boolean(iLink.state.contextToken),
+      msgsCount: Array.isArray(data.msgs) ? data.msgs.length : 0,
+      ret: data.ret,
+      errmsg: data.errmsg || null
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 router.post('/admin/logout', requireApiKey, (req, res) => {
   try {
     iLink.logout();

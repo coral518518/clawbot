@@ -1,0 +1,12 @@
+name = "blitz-cloud-auto"
+main = "src/index.js"
+compatibility_date = "2026-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+browser = { binding = "MY_BROWSER" }
+
+[triggers]
+crons = ["*/21 * * * *"]
+
+[vars]
+BLITZ_APP_URL = "https://clawbot.coral.blitz.cloud"

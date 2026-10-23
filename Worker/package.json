@@ -1,0 +1,16 @@
+{
+    "name": "blitz-cloud-auto",
+    "version": "1.0.0",
+    "type": "module",
+    "scripts": {
+        "dev": "wrangler dev",
+        "deploy": "wrangler deploy",
+        "tail": "wrangler tail"
+    },
+    "dependencies": {
+        "@cloudflare/puppeteer": "^0.0.14"
+    },
+    "devDependencies": {
+        "wrangler": "^3.114.17"
+    }
+}

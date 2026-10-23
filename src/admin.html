@@ -581,15 +581,6 @@
       <div id="sendFeedback" class="feedback-msg"></div>
     </div>
 
-    <!-- 3. API 调用示例卡片 -->
-    <div class="card">
-      <h2><span>接口调用与集成指南</span></h2>
-      <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 12px;">
-        所有接口均在 <code>{{ROUTE_PREFIX}}</code> 前缀下，支持普通推送、立即发送与多条数组合并推送：
-      </p>
-
-      <div class="code-block" id="curlSnippet">正在生成调用示例...</div>
-    </div>
   </div>
 
   <!-- 鉴权密钥输入弹窗 -->
@@ -611,7 +602,19 @@
   <!-- data-cfasync="false" 阻止 Cloudflare Rocket Loader 篡改此脚本执行时序 -->
   <script data-cfasync="false">
     const PREFIX = '{{ROUTE_PREFIX}}';
-    let apiKey = new URLSearchParams(window.location.search).get('api_key') || localStorage.getItem('clawbot_api_key') || '';
+    
+    // 自动读取密钥，并立即从浏览器地址栏抹除 ?api_key= 参数，防止截屏或历史记录泄密
+    let urlParamKey = new URLSearchParams(window.location.search).get('api_key');
+    let apiKey = urlParamKey || localStorage.getItem('clawbot_api_key') || '';
+    if (urlParamKey) {
+      localStorage.setItem('clawbot_api_key', urlParamKey);
+      try {
+        const cleanUrl = new URL(window.location.href);
+        cleanUrl.searchParams.delete('api_key');
+        window.history.replaceState({}, document.title, cleanUrl.pathname + (cleanUrl.search ? cleanUrl.search : '') + cleanUrl.hash);
+      } catch (_) {}
+    }
+
     let pollTimer = null;
 
     function checkAuth() {
@@ -632,35 +635,6 @@
       localStorage.setItem('clawbot_api_key', apiKey);
       document.getElementById('authModal').style.display = 'none';
       checkState();
-      updateSnippets();
-    }
-
-    function updateSnippets() {
-      const host = window.location.origin;
-      const key = apiKey || 'YOUR_API_KEY';
-      const snippet = [
-        '# 1. cURL POST 推送 (自动合批防风暴)',
-        'curl -X POST "' + host + PREFIX + '/api/send" \\',
-        '  -H "Content-Type: application/json" \\',
-        '  -H "X-API-Key: ' + key + '" \\',
-        '  -d \'{"title": "服务告警", "text": "CPU 使用率已超过 90%"}\'',
-        '',
-        '# 2. cURL POST 立即发送 (跳过合批等待)',
-        'curl -X POST "' + host + PREFIX + '/api/send" \\',
-        '  -H "Content-Type: application/json" \\',
-        '  -H "X-API-Key: ' + key + '" \\',
-        '  -d \'{"text": "紧急安全事件", "immediate": true}\'',
-        '',
-        '# 3. 数组显式合并推送 (N条合并为1条，省额度)',
-        'curl -X POST "' + host + PREFIX + '/api/send" \\',
-        '  -H "Content-Type: application/json" \\',
-        '  -H "X-API-Key: ' + key + '" \\',
-        '  -d \'{"title": "巡检汇总", "messages": ["磁盘 45%", "内存 60%", "网络良好"]}\'',
-        '',
-        '# 4. 简易 GET Webhook 推送 (供 Uptime Kuma/路由器调用)',
-        'curl "' + host + PREFIX + '/api/send?api_key=' + key + '&text=Hello%20Clawbot"'
-      ].join('\n');
-      document.getElementById('curlSnippet').innerText = snippet;
     }
 
     async function checkState() {
@@ -851,7 +825,9 @@
       imgBox.style.display = 'none';
 
       try {
-        const res = await fetch(PREFIX + '/admin/get-qrcode?api_key=' + encodeURIComponent(apiKey));
+        const res = await fetch(PREFIX + '/admin/get-qrcode', {
+          headers: { 'X-API-Key': apiKey }
+        });
         const data = await res.json();
 
         if (!data.qrcode_img_content) {
@@ -896,7 +872,9 @@
           }
 
           try {
-            const sRes = await fetch(PREFIX + '/admin/check-qrcode?qrcode=' + encodeURIComponent(data.qrcode) + '&api_key=' + encodeURIComponent(apiKey));
+            const sRes = await fetch(PREFIX + '/admin/check-qrcode?qrcode=' + encodeURIComponent(data.qrcode), {
+              headers: { 'X-API-Key': apiKey }
+            });
             const sData = await sRes.json();
 
             if (sData.status === 'confirmed') {
@@ -1150,7 +1128,6 @@
     if (apiKey) {
       localStorage.setItem('clawbot_api_key', apiKey);
     }
-    updateSnippets();
     checkState();
     // 状态定期轮询：1 分钟请求一次
     setInterval(checkState, 60000);

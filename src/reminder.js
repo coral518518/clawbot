@@ -183,7 +183,7 @@ export class TokenReminderService {
         url: config.triggerWebhookUrl,
         authConfigured: Boolean(config.triggerAuthKey),
         authKeyConfigured: Boolean(config.triggerAuthKey),
-        maskedAuthHeader: authHeader ? (authHeader.slice(0, 16) + '***') : '未配置',
+        maskedAuthHeader: authHeader ? 'Bearer chb_***' : '未配置',
         triggerAt: webhookTriggerAt,
         triggerAtBeijing: formatBeijingTime(webhookTriggerAt),
         isTriggered: isWebhookTriggered,

@@ -328,9 +328,17 @@ function handleRootPage(req, res) {
   res.send(getAdminHtml());
 }
 
-// 根页面支持直接访问（无需 ROUTE_PREFIX，直接访问 /，同时也兼容前缀访问）
-app.get('/', handleRootPage);
-router.get('/', handleRootPage);
+// 根路径返回 200 空白页面（用于云平台探活与保活唤醒，同时隐藏后台管理入口）
+function handleBlankRoot(req, res) {
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.status(200).send('');
+}
+
+// 根路径直通返回 200 空白页面（无需前缀）
+app.get('/', handleBlankRoot);
+router.get('/', handleBlankRoot);
+
+// 只有在配置的 ROUTE_PREFIX 下的 /admin 才能访问网关管理页面
 router.get('/admin', handleRootPage);
 
 // 将所有核心功能统一挂载在配置的前缀下（默认 /coral）

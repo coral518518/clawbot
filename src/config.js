@@ -69,7 +69,11 @@ export const config = {
   batchWindowMs: parseInt(process.env.BATCH_WINDOW_MS || '2500', 10),
   // 到期前半小时 Webhook 任务触发配置
   triggerWebhookUrl: process.env.TRIGGER_WEBHOOK_URL || 'http://job.coral.cc.cd/api/trigger/tasks/6',
-  triggerAuthKey: process.env.TRIGGER_AUTH_KEY || ''
+  triggerAuthKey: process.env.TRIGGER_AUTH_KEY || '',
+  // 双机高可用集群配置 (如 Blitz Cloud <-> Miget 跨云热备)
+  peerUrl: (process.env.PEER_URL || '').trim().replace(/\/+$/, ''),
+  nodeRole: (process.env.NODE_ROLE || 'auto').trim().toLowerCase(), // 'master' | 'standby' | 'auto'
+  clusterHeartbeatIntervalMs: parseInt(process.env.CLUSTER_HEARTBEAT_INTERVAL_MS || '15000', 10)
 };
 
 // 尝试从持久化配置文件加载保存的 trigger 配置

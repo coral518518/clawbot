@@ -385,9 +385,15 @@
         <span>🤖</span>
         <span>ClawBot 微信纯通知网关</span>
       </h1>
-      <div id="statusBadge" class="badge badge-UNPAIRED">
-        <span class="badge-dot"></span>
-        <span id="statusBadgeText">检查状态中...</span>
+      <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+        <div id="clusterBadge" class="badge" style="display: none; background: rgba(59, 130, 246, 0.15); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.3);">
+          <span class="badge-dot" id="clusterBadgeDot" style="background: #60a5fa;"></span>
+          <span id="clusterBadgeText">集群节点: 单机</span>
+        </div>
+        <div id="statusBadge" class="badge badge-UNPAIRED">
+          <span class="badge-dot"></span>
+          <span id="statusBadgeText">检查状态中...</span>
+        </div>
       </div>
     </div>
 
@@ -513,6 +519,42 @@
         </div>
         <button id="getQrBtn" class="btn btn-block" onclick="initLogin()">获取微信绑定二维码</button>
       </div>
+    </div>
+
+    <!-- 1.5 双机高可用集群状态卡片 (跨云热备) -->
+    <div class="card" id="clusterCard" style="display: none;">
+      <h2>
+        <span>双机高可用热备集群 (Blitz Cloud & Miget)</span>
+        <span id="clusterStatusText" style="font-size: 13px; font-weight: normal; color: var(--text-muted);">跨云双机互备</span>
+      </h2>
+      <div class="tip-box">
+        已启用双机对等状态同步与故障自愈回路：Master 负责维持微信长轮询与定时提醒任务，任何凭据变更均会自动推送到对端 Standby。<br>
+        一旦 Master 宕机或网络中断，Standby 节点将自动晋升接管，实现无人值守平滑容灾。
+      </div>
+      <div class="info-grid">
+        <div class="info-item">
+          <div class="info-label">本节点角色</div>
+          <div class="info-value" id="valClusterRole">-</div>
+        </div>
+        <div class="info-item">
+          <div class="info-label">微信长轮询与守护任务</div>
+          <div class="info-value" id="valClusterTasks">-</div>
+        </div>
+        <div class="info-item">
+          <div class="info-label">对端节点存活状态</div>
+          <div class="info-value" id="valClusterPeerStatus">-</div>
+        </div>
+        <div class="info-item">
+          <div class="info-label">对端节点地址</div>
+          <div class="info-value" id="valClusterPeerUrl" style="font-size: 11px; word-break: break-all;">-</div>
+        </div>
+      </div>
+      <div style="display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap;">
+        <button class="btn btn-secondary" onclick="manualPromote()" style="font-size: 12px; padding: 6px 14px;">👑 手动晋升为 Master (激活任务)</button>
+        <button class="btn btn-secondary" onclick="manualDemote()" style="font-size: 12px; padding: 6px 14px;">⏸ 手动降级为 Standby (让出权限)</button>
+        <button class="btn btn-secondary" onclick="manualPullState()" style="font-size: 12px; padding: 6px 14px;">🔄 从对端强制拉取最新凭证</button>
+      </div>
+      <div id="clusterFeedback" class="feedback-msg"></div>
     </div>
 
     <!-- 2. 发送测试通知卡片 -->
@@ -646,6 +688,46 @@
         document.getElementById('valBotId').innerText = data.botId || '未分配';
         document.getElementById('valUserId').innerText = data.userId || '未获取';
         document.getElementById('valLastActive').innerText = data.lastActiveTime ? new Date(data.lastActiveTime).toLocaleString() : '无记录';
+
+        // 渲染集群状态信息
+        if (data.cluster && data.cluster.isCluster) {
+          const c = data.cluster;
+          document.getElementById('clusterCard').style.display = 'block';
+          const cb = document.getElementById('clusterBadge');
+          const ct = document.getElementById('clusterBadgeText');
+          const cd = document.getElementById('clusterBadgeDot');
+          cb.style.display = 'inline-flex';
+
+          const isMaster = c.role === 'master';
+          if (isMaster) {
+            cb.style.background = 'rgba(16, 185, 129, 0.15)';
+            cb.style.color = '#34d399';
+            cb.style.border = '1px solid rgba(16, 185, 129, 0.3)';
+            cd.style.background = '#34d399';
+            ct.innerText = '★ 主节点 (Master · 任务活跃)';
+
+            document.getElementById('valClusterRole').innerHTML = '<span style="color:#34d399; font-weight:600;">👑 主节点 (Master)</span>';
+            document.getElementById('valClusterTasks').innerHTML = '<span style="color:#34d399;">● 微信长轮询与守护任务正常运行中</span>';
+          } else {
+            cb.style.background = 'rgba(245, 158, 11, 0.15)';
+            cb.style.color = '#fbbf24';
+            cb.style.border = '1px solid rgba(245, 158, 11, 0.3)';
+            cd.style.background = '#fbbf24';
+            ct.innerText = '⏸ 备节点 (Standby · 静默待命)';
+
+            document.getElementById('valClusterRole').innerHTML = '<span style="color:#fbbf24; font-weight:600;">⏸ 备用节点 (Standby)</span>';
+            document.getElementById('valClusterTasks').innerHTML = '<span style="color:#94a3b8;">静默待命中 (故障时将自动顶替接管)</span>';
+          }
+
+          document.getElementById('valClusterPeerUrl').innerText = c.peerUrl || '未配置';
+          if (c.peerOnline === true) {
+            document.getElementById('valClusterPeerStatus').innerHTML = '<span style="color:#34d399;">● 对端在线 (' + (c.peerRole || 'active') + ')</span>';
+          } else if (c.peerOnline === false) {
+            document.getElementById('valClusterPeerStatus').innerHTML = '<span style="color:#f87171;">● 对端失联 (失败 ' + (c.failureCount || 0) + ' 次)</span>';
+          } else {
+            document.getElementById('valClusterPeerStatus').innerHTML = '<span style="color:#94a3b8;">探测中...</span>';
+          }
+        }
 
         if (data.quota) {
           const used = data.quota.used || 0;
@@ -1014,6 +1096,53 @@
         checkState();
       } catch (err) {
         alert('解绑失败: ' + err.message);
+      }
+    }
+
+    async function manualPromote() {
+      if (!confirm('确定将本节点手动晋升为主节点 (Master) 吗？\n晋升后本节点将接管微信长轮询回路和定时到期提醒任务。')) return;
+      try {
+        const res = await fetch(PREFIX + '/api/cluster/promote', {
+          method: 'POST',
+          headers: { 'X-API-Key': apiKey }
+        });
+        const data = await res.json();
+        alert(data.message || '已晋升为 Master');
+        checkState();
+      } catch (err) {
+        alert('操作失败: ' + err.message);
+      }
+    }
+
+    async function manualDemote() {
+      if (!confirm('确定将本节点手动降级为备用节点 (Standby) 吗？\n降级后本节点将停止微信长轮询和定时任务，进入静默待命状态。')) return;
+      try {
+        const res = await fetch(PREFIX + '/api/cluster/demote', {
+          method: 'POST',
+          headers: { 'X-API-Key': apiKey }
+        });
+        const data = await res.json();
+        alert(data.message || '已降级为 Standby');
+        checkState();
+      } catch (err) {
+        alert('操作失败: ' + err.message);
+      }
+    }
+
+    async function manualPullState() {
+      try {
+        const res = await fetch(PREFIX + '/api/cluster/state', {
+          headers: { 'X-API-Key': apiKey }
+        });
+        const data = await res.json();
+        if (data.success && data.state) {
+          alert('成功拉取到状态！当前有效 Token: ' + Boolean(data.state.contextToken));
+          checkState();
+        } else {
+          alert('拉取对端状态未返回有效数据');
+        }
+      } catch (err) {
+        alert('拉取失败: ' + err.message);
       }
     }
 

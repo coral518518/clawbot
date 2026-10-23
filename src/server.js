@@ -6,6 +6,7 @@ import { config, saveTriggerConfig } from './config.js';
 import { iLink } from './ilink-client.js';
 import { reminderService } from './reminder.js';
 import { requireApiKey, apiLimiter } from './middleware.js';
+import { ClusterManager } from './cluster.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -26,6 +27,9 @@ app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 // 创建专属路由器，挂载于 config.routePrefix（默认 /coral）
 const router = express.Router();
 
+// 实例化集群协调器
+export const clusterManager = new ClusterManager(iLink, reminderService);
+
 // 针对 blitz.cloud 与 Cloudflare 边缘代理禁用动态接口缓存
 app.use((req, res, next) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
@@ -38,6 +42,7 @@ app.use((req, res, next) => {
 function handleHealth(req, res) {
   res.json({
     status: 'ok',
+    cluster: clusterManager.getStatus(),
     gateway_state: iLink.statusDescription,
     quota: {
       remaining: iLink.remainingQuota,
@@ -57,6 +62,7 @@ router.get('/health', handleHealth);
 router.get('/api/status', requireApiKey, (req, res) => {
   res.json({
     success: true,
+    cluster: clusterManager.getStatus(),
     status: iLink.statusDescription,
     userId: iLink.effectiveUserId || iLink.state.userId || null,
     botId: iLink.state.botId || null,
@@ -267,6 +273,48 @@ router.post('/admin/update-trigger-config', requireApiKey, (req, res) => {
   }
 });
 
+// 6. 双机高可用集群接口 (Blitz Cloud <-> Miget)
+// 备节点接收 Master 推送的最新状态并落盘
+router.post('/api/cluster/sync', requireApiKey, (req, res) => {
+  const incoming = req.body;
+  const ok = clusterManager.handleIncomingSync(incoming);
+  if (ok) {
+    res.json({ success: true, message: '状态已同步落盘', timestamp: Date.now() });
+  } else {
+    res.status(400).json({ success: false, message: '无效的状态数据' });
+  }
+});
+
+// 查询当前节点状态与全量数据（供备机启动或恢复时主动拉取）
+router.get('/api/cluster/state', requireApiKey, (req, res) => {
+  res.json({
+    success: true,
+    role: clusterManager.role,
+    state: iLink.state,
+    timestamp: Date.now()
+  });
+});
+
+// 获取集群节点状态
+router.get('/api/cluster/status', requireApiKey, (req, res) => {
+  res.json({
+    success: true,
+    ...clusterManager.getStatus()
+  });
+});
+
+// 手动切换角色：晋升为 Master
+router.post('/api/cluster/promote', requireApiKey, (req, res) => {
+  clusterManager.promoteToMaster('管理端手动调用 API 晋升');
+  res.json({ success: true, role: clusterManager.role, message: '已手动晋升为 Master' });
+});
+
+// 手动切换角色：降级为 Standby
+router.post('/api/cluster/demote', requireApiKey, (req, res) => {
+  clusterManager.demoteToStandby('管理端手动调用 API 降级');
+  res.json({ success: true, role: clusterManager.role, message: '已手动降级为 Standby' });
+});
+
 // 5. 渲染管理页面（读取独立 html 模板，彻底规避模板转义与 Cloudflare 脚本语法错误）
 function getAdminHtml() {
   const htmlTpl = fs.readFileSync(adminHtmlPath, 'utf-8');
@@ -295,12 +343,10 @@ app.use((req, res) => {
 
 // 优雅停机
 function handleShutdown(signal) {
-  console.log(`[Server] 接收到 ${signal}，正在优雅关停长轮询与定时任务...`);
+  console.log(`[Server] 接收到 ${signal}，正在优雅关停集群与定时任务...`);
+  clusterManager.stop();
   reminderService.stop();
-  iLink.pollingActive = false;
-  if (iLink.abortController) {
-    try { iLink.abortController.abort(); } catch { }
-  }
+  iLink.stopLongPolling();
   process.exit(0);
 }
 
@@ -308,21 +354,19 @@ process.on('SIGTERM', () => handleShutdown('SIGTERM'));
 process.on('SIGINT', () => handleShutdown('SIGINT'));
 
 // 服务启动（显式绑定 0.0.0.0 以适配 blitz.cloud 容器网络接入）
-app.listen(config.port, '0.0.0.0', () => {
+app.listen(config.port, '0.0.0.0', async () => {
   console.log(`[Server] ClawBot 微信通知网关服务已启动！`);
+  console.log(`[Server] 访问前缀: ${config.routePrefix}`);
   console.log(`[Server] 根页面: http://127.0.0.1:${config.port}/`);
   console.log(`[Server] 健康检查: http://127.0.0.1:${config.port}/health`);
   console.log(`[Server] 管理后台: http://127.0.0.1:${config.port}${config.routePrefix}/admin`);
   console.log(`[Server] 推送接口: http://127.0.0.1:${config.port}${config.routePrefix}/api/send`);
   console.log(`[Server] 消息合批窗口: ${config.batchWindowMs}ms | 单会话硬配额: ${config.maxQuota}条`);
 
-  // 启动微信 Token 过期定时自动提醒守护任务
-  reminderService.start(iLink);
+  // 初始化集群管理器（自动决策 Master/Standby 角色，仅主节点拉起长轮询与守护任务）
+  await clusterManager.init();
 
-  if (iLink.state.botToken) {
-    console.log('[Server] 发现已有授权记录，正在拉起后台长轮询保活回路...');
-    iLink.startLongPolling();
-  } else {
+  if (!iLink.state.botToken && clusterManager.role === 'master') {
     console.log(`[Server] 尚未绑定微信 Bot，请访问 http://127.0.0.1:${config.port}${config.routePrefix}/admin 扫码`);
   }
 });

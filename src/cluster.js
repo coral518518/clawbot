@@ -1,0 +1,297 @@
+import { config } from './config.js';
+import { storage } from './storage.js';
+
+/**
+ * ClusterManager: 跨云双机对等高可用集群协调器 (Blitz Cloud <-> Miget)
+ * 职责：
+ * 1. 自动主备选举（Master / Standby），保证全集群永远只有 1 个实例运行长轮询与定时任务；
+ * 2. 状态全自动实时双向同步（登录凭证、Token、配额、游标变化立即落盘到两端）；
+ * 3. 心跳探活与自动故障转移（Failover）：主节点宕机/休眠时，备节点无感自动顶替接管。
+ */
+export class ClusterManager {
+  constructor(iLink, reminderService) {
+    this.iLink = iLink;
+    this.reminderService = reminderService;
+    this.peerUrl = config.peerUrl;
+    this.role = config.nodeRole === 'standby' ? 'standby' : 'master'; // 初始角色
+    this.peerOnline = null;
+    this.peerRole = null;
+    this.failureCount = 0;
+    this.lastHeartbeat = null;
+    this.lastSyncSuccess = null;
+    this.lastRoleChangeAt = Date.now();
+    this.heartbeatTimer = null;
+    this.unsubscribeStorage = null;
+  }
+
+  /**
+   * 初始化集群
+   */
+  async init() {
+    // 监听本地存储变更，无论本节点是 Master 还是 Standby，只要有本地发起的有效变更均同步给对端
+    this.unsubscribeStorage = storage.subscribe((state) => {
+      if (this.peerUrl && state) {
+        this.syncToPeer(state);
+      }
+    });
+
+    if (!this.peerUrl) {
+      console.log('[Cluster] 未配置 PEER_URL，当前服务以独立单机模式运行 (Role: Master)');
+      this.role = 'master';
+      this.startMasterTasks();
+      return;
+    }
+
+    console.log(`[Cluster] 集群模式启动！对端地址: ${this.peerUrl} | 初始预设角色: ${config.nodeRole}`);
+
+    // 自适应角色决策
+    if (config.nodeRole === 'master') {
+      this.role = 'master';
+      this.startMasterTasks();
+    } else if (config.nodeRole === 'standby') {
+      this.role = 'standby';
+      this.stopMasterTasks();
+      await this.pullStateFromPeer();
+    } else {
+      // auto 模式：主动探活对端，若对端 Master 存活则成为 Standby，否则成为 Master
+      const peerStatus = await this._probePeer();
+      if (peerStatus && peerStatus.online && peerStatus.role === 'master') {
+        console.log('[Cluster] 探测到对端 Master 正在运行，当前节点自动设置为 Standby 备用');
+        this.role = 'standby';
+        this.stopMasterTasks();
+        await this.pullStateFromPeer();
+      } else {
+        console.log('[Cluster] 未发现活跃的主节点，当前节点自动接管为 Master');
+        this.role = 'master';
+        this.startMasterTasks();
+      }
+    }
+
+    // 启动心跳与故障转移检测回路
+    this.startHeartbeatLoop();
+  }
+
+  /**
+   * 启动 Master 任务（微信长轮询回路 + 定时提醒守护任务）
+   */
+  startMasterTasks() {
+    this.role = 'master';
+    this.lastRoleChangeAt = Date.now();
+
+    if (this.iLink.state.botToken && !this.iLink.pollingActive) {
+      console.log('[Cluster] 发现授权记录，Master 正在拉起微信消息长轮询...');
+      this.iLink.startLongPolling();
+    }
+    this.reminderService.start(this.iLink);
+    console.log('[Cluster] ★ 当前节点已激活 MASTER 权限：长轮询与到期提醒任务正常运行中');
+  }
+
+  /**
+   * 停止 Master 任务（降级为 Standby 备用）
+   */
+  stopMasterTasks() {
+    this.role = 'standby';
+    this.lastRoleChangeAt = Date.now();
+
+    this.iLink.stopLongPolling();
+    this.reminderService.stop();
+    console.log('[Cluster] ⏸ 当前节点已切换至 STANDBY 状态：长轮询与定时守护任务静默待命中');
+  }
+
+  /**
+   * 晋升为主节点 (Promote to Master)
+   */
+  promoteToMaster(reason = '手动晋升') {
+    if (this.role === 'master') return;
+    console.warn(`[Cluster] ⚡ 故障接管：备机晋升为 MASTER！原因: ${reason}`);
+    // 重新加载本地最新 auth_state
+    const latestState = storage.get();
+    if (latestState) {
+      this.iLink.state = latestState;
+    }
+    this.startMasterTasks();
+  }
+
+  /**
+   * 降级为备节点 (Demote to Standby)
+   */
+  demoteToStandby(reason = '让出 Master 权限') {
+    if (this.role === 'standby') return;
+    console.warn(`[Cluster] ⚡ 主备协调：当前节点降级为 STANDBY！原因: ${reason}`);
+    this.stopMasterTasks();
+    this.pullStateFromPeer();
+  }
+
+  /**
+   * 将当前状态推送到对端 (Push Sync)
+   */
+  async syncToPeer(state) {
+    if (!this.peerUrl || !state) return;
+    try {
+      const res = await fetch(`${this.peerUrl}${config.routePrefix}/api/cluster/sync`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': config.apiKey
+        },
+        body: JSON.stringify(state),
+        signal: AbortSignal.timeout(6000)
+      });
+      if (res.ok) {
+        this.lastSyncSuccess = Date.now();
+        console.log('[Cluster] 已将最新 auth_state.json 实时推送到对端节点');
+      } else {
+        console.warn(`[Cluster] 推送状态至对端返回 HTTP ${res.status}`);
+      }
+    } catch (err) {
+      console.warn(`[Cluster] 推送状态至对端失败 (${err.message})`);
+    }
+  }
+
+  /**
+   * 从对端主动拉取最新状态 (Pull Sync)
+   */
+  async pullStateFromPeer() {
+    if (!this.peerUrl) return;
+    try {
+      const res = await fetch(`${this.peerUrl}${config.routePrefix}/api/cluster/state`, {
+        headers: { 'x-api-key': config.apiKey },
+        signal: AbortSignal.timeout(6000)
+      });
+      if (res.ok) {
+        const body = await res.json();
+        if (body && body.state) {
+          const incoming = body.state;
+          const local = storage.get();
+          const incomingTime = incoming.updatedAt || incoming.lastActiveTime || 0;
+          const localTime = local ? (local.updatedAt || local.lastActiveTime || 0) : 0;
+
+          if (!local || incomingTime >= localTime) {
+            storage.set(incoming, false); // false: 避免再次反向触发推送
+            this.iLink.state = incoming;
+            console.log('[Cluster] 已成功从对端拉取并应用最新 auth_state.json');
+          }
+        }
+      }
+    } catch (err) {
+      console.warn(`[Cluster] 从对端拉取状态失败 (${err.message})`);
+    }
+  }
+
+  /**
+   * 处理对端推送过来的最新状态
+   */
+  handleIncomingSync(incomingState) {
+    if (!incomingState || typeof incomingState !== 'object') return false;
+    storage.set(incomingState, false); // false: 禁止二次广播，防止死循环
+    this.iLink.state = incomingState;
+    console.log('[Cluster] 已收到并落盘对端同步的最新 auth_state.json');
+
+    // 若本节点当前是 Master 且此前未启动轮询（如用户是在对端备机扫码绑定的），则自动激活长轮询
+    if (this.role === 'master' && this.iLink.state.botToken && !this.iLink.pollingActive) {
+      console.log('[Cluster] 收到新绑定凭证，Master 自动激活微信长轮询回路...');
+      this.iLink.startLongPolling();
+    }
+    return true;
+  }
+
+  /**
+   * 启动心跳检测回路（探测对端、故障转移与脑裂预防）
+   */
+  startHeartbeatLoop() {
+    if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
+    this.heartbeatTimer = setInterval(() => this._tickHeartbeat(), config.clusterHeartbeatIntervalMs);
+  }
+
+  async _probePeer() {
+    if (!this.peerUrl) return { online: false };
+    try {
+      const res = await fetch(`${this.peerUrl}${config.routePrefix}/api/cluster/status`, {
+        headers: { 'x-api-key': config.apiKey },
+        signal: AbortSignal.timeout(4500)
+      });
+      if (res.ok) {
+        const data = await res.json();
+        return { online: true, role: data.role, ...data };
+      }
+    } catch {
+      // 兼容直接探测 /health
+      try {
+        const fallbackRes = await fetch(`${this.peerUrl}/health`, { signal: AbortSignal.timeout(4500) });
+        if (fallbackRes.ok) return { online: true, role: 'master' };
+      } catch {}
+    }
+    return { online: false };
+  }
+
+  async _tickHeartbeat() {
+    if (!this.peerUrl) return;
+
+    const probe = await this._probePeer();
+    this.peerOnline = probe.online;
+
+    if (probe.online) {
+      this.lastHeartbeat = Date.now();
+      this.peerRole = probe.role || 'unknown';
+
+      // 1. 备节点场景：对端 Master 存活，重置失败计数
+      if (this.role === 'standby') {
+        this.failureCount = 0;
+      }
+
+      // 2. 脑裂防护场景：两个节点若同时被判定为 Master
+      if (this.role === 'master' && probe.role === 'master') {
+        if (config.nodeRole === 'standby') {
+          // 当前节点配置明确倾向为 standby，主动谦让降级
+          this.demoteToStandby('对端已为 Master，且本节点配置偏向为 standby');
+        } else if (config.nodeRole === 'auto' && this.lastRoleChangeAt > (probe.lastRoleChangeAt || 0)) {
+          // 当前节点更晚变更为 master，后启动者让位于先启动者
+          this.demoteToStandby('集群双主冲突，优先保留老节点');
+        }
+      }
+    } else {
+      // 对端不在线或超时
+      if (this.role === 'standby') {
+        this.failureCount++;
+        const maxRetries = 3;
+        console.warn(`[Cluster] 主节点 (${this.peerUrl}) 心跳无响应 [${this.failureCount}/${maxRetries}]`);
+
+        // 连续 3 次心跳失败（约 45 秒），自动晋升为主节点接管工作！
+        if (this.failureCount >= maxRetries) {
+          this.failureCount = 0;
+          this.promoteToMaster(`主节点连续 ${maxRetries} 次无心跳响应，自动故障接管`);
+        }
+      }
+    }
+  }
+
+  /**
+   * 获取集群运行时状态（给前端与健康探测使用）
+   */
+  getStatus() {
+    return {
+      isCluster: Boolean(this.peerUrl),
+      role: this.role,
+      configuredRole: config.nodeRole,
+      peerUrl: this.peerUrl || null,
+      peerOnline: this.peerOnline,
+      peerRole: this.peerRole,
+      failureCount: this.failureCount,
+      lastHeartbeat: this.lastHeartbeat,
+      lastSyncSuccess: this.lastSyncSuccess,
+      lastRoleChangeAt: this.lastRoleChangeAt,
+      isPollingActive: this.iLink.pollingActive,
+      isReminderActive: Boolean(this.reminderService.intervalTimer)
+    };
+  }
+
+  stop() {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
+    if (this.unsubscribeStorage) {
+      this.unsubscribeStorage();
+    }
+  }
+}

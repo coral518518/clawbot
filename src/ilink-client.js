@@ -394,6 +394,15 @@ export class ILinkClient {
     this._runPollingLoop();
   }
 
+  stopLongPolling() {
+    this.pollingActive = false;
+    if (this.abortController) {
+      try { this.abortController.abort(); } catch { }
+    }
+    clearTimeout(this.watchdogTimer);
+    console.log('[iLink] 已停止消息长轮询');
+  }
+
   restartLongPolling() {
     this.pollingActive = false;
     if (this.abortController) {

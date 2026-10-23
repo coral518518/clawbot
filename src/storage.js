@@ -3,6 +3,7 @@ import path from 'path';
 import { config } from './config.js';
 
 const AUTH_FILE = path.join(config.dataDir, 'auth_state.json');
+const changeListeners = new Set();
 
 // 确保存储目录存在
 function ensureDirExists() {
@@ -18,6 +19,12 @@ function ensureDirExists() {
 ensureDirExists();
 
 export const storage = {
+  // 订阅存储变更（用于集群间状态同步）
+  subscribe(fn) {
+    changeListeners.add(fn);
+    return () => changeListeners.delete(fn);
+  },
+
   get() {
     try {
       if (!fs.existsSync(AUTH_FILE)) return null;
@@ -29,9 +36,13 @@ export const storage = {
     }
   },
 
-  set(data) {
+  set(data, broadcast = true) {
     ensureDirExists();
     const tempPath = `${AUTH_FILE}.tmp.${Date.now()}`;
+    // 自动维护更新时间戳，用于集群多节点比对最新版本
+    if (data && typeof data === 'object') {
+      data.updatedAt = data.updatedAt || Date.now();
+    }
     const payload = JSON.stringify(data, null, 2);
 
     try {
@@ -52,15 +63,29 @@ export const storage = {
         console.error('[Storage] 直接写入鉴权文件亦失败:', directErr.message);
       }
     }
+
+    // 触发集群状态变更广播
+    if (broadcast) {
+      for (const listener of changeListeners) {
+        try { listener(data); } catch (e) {
+          console.error('[Storage] 集群状态监听器执行异常:', e.message);
+        }
+      }
+    }
   },
 
-  clear() {
+  clear(broadcast = true) {
     try {
       if (fs.existsSync(AUTH_FILE)) {
         fs.unlinkSync(AUTH_FILE);
       }
     } catch (err) {
       console.error('[Storage] 删除鉴权文件失败:', err.message);
+    }
+    if (broadcast) {
+      for (const listener of changeListeners) {
+        try { listener(null); } catch (e) {}
+      }
     }
   }
 };

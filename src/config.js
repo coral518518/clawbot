@@ -53,7 +53,7 @@ function resolveDataDir() {
 }
 
 export const config = {
-  port: parseInt(process.env.PORT || '8080', 10),
+  port: parseInt(process.env.PORT || '5000', 10),
   // 基础访问前缀：默认 /coral，所有外部接口和管理页面均在此前缀下
   routePrefix: normalizePrefix(process.env.ROUTE_PREFIX || '/coral'),
   // 外部调用 /api/send 和管理接口所需的固定密钥
@@ -68,7 +68,7 @@ export const config = {
   // 消息合并与合批等待窗口（毫秒，默认 2500ms，设为 0 则不合并即时发送）
   batchWindowMs: parseInt(process.env.BATCH_WINDOW_MS || '2500', 10),
   // 到期前半小时 Webhook 任务触发配置
-  triggerWebhookUrl: process.env.TRIGGER_WEBHOOK_URL || 'http://job.coral.cc.cd/api/trigger/tasks/5',
+  triggerWebhookUrl: process.env.TRIGGER_WEBHOOK_URL || 'http://job.coral.cc.cd/api/trigger/tasks/6',
   triggerAuthKey: process.env.TRIGGER_AUTH_KEY || ''
 };
 

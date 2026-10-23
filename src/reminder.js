@@ -111,8 +111,8 @@ export class TokenReminderService {
 
     // 服务拉起后稍作延迟即执行首次检查（避开启动瞬态）
     setTimeout(() => {
-      this.checkAndTrigger(false).catch(() => {});
-      this.checkAndTriggerWebhook(false).catch(() => {});
+      this.checkAndTrigger(false).catch(() => { });
+      this.checkAndTriggerWebhook(false).catch(() => { });
     }, 3000);
   }
 
@@ -171,12 +171,12 @@ export class TokenReminderService {
       statusDescription: !hasToken
         ? '未获取 Token'
         : isExpired
-        ? 'Token 已过期'
-        : isSent
-        ? '已发送提醒 (等待微信回复刷新)'
-        : nextReminderAt
-        ? `计划于 ${formatBeijingTime(nextReminderAt)} 提醒`
-        : '待定',
+          ? 'Token 已过期'
+          : isSent
+            ? '已发送提醒 (等待微信回复刷新)'
+            : nextReminderAt
+              ? `计划于 ${formatBeijingTime(nextReminderAt)} 提醒`
+              : '待定',
 
       // 到期前半小时触发 Webhook 状态
       webhook: {
@@ -194,12 +194,12 @@ export class TokenReminderService {
         statusDescription: !hasToken
           ? '未获取 Token'
           : isExpired
-          ? 'Token 已过期'
-          : isWebhookTriggered
-          ? `已于 ${formatBeijingTime(state.webhookTriggeredAt)} 触发成功 (HTTP ${state.webhookLastStatus || 200})`
-          : webhookTriggerAt
-          ? `计划于 ${formatBeijingTime(webhookTriggerAt)} 自动触发 (到期前半小时)`
-          : '待定'
+            ? 'Token 已过期'
+            : isWebhookTriggered
+              ? `已于 ${formatBeijingTime(state.webhookTriggeredAt)} 触发成功 (HTTP ${state.webhookLastStatus || 200})`
+              : webhookTriggerAt
+                ? `计划于 ${formatBeijingTime(webhookTriggerAt)} 自动触发 (到期前半小时)`
+                : '待定'
       }
     };
   }
@@ -302,7 +302,7 @@ export class TokenReminderService {
 
   /**
    * 2. 检查并在 Token 到期前半小时执行一次 POST Webhook 请求
-   *    URL: http://job.coral.cc.cd/api/trigger/tasks/5
+   *    URL: http://job.coral.cc.cd/api/trigger/tasks/6
    *    头部: Authorization: Bearer chb_<key>
    * @param {boolean} force - 是否强制触发（用于后台测试）
    */

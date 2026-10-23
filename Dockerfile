@@ -15,8 +15,8 @@ ENV PORT=8080
 ENV ROUTE_PREFIX=/coral
 ENV DATA_DIR=/app/data
 
-# 预置数据持久化挂载目录
-RUN mkdir -p /app/data
+# 预置数据持久化挂载目录并赋予完全读写权限（兼容非 root 容器运行环境）
+RUN mkdir -p /app/data && chmod -R 777 /app/data
 
 EXPOSE 8080
 

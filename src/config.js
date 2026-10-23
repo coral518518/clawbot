@@ -1,5 +1,6 @@
 import path from 'path';
 import fs from 'fs';
+import os from 'os';
 
 // 尝试加载根目录下的 .env 文件（Node.js >= 20.6.0 原生支持）
 try {
@@ -20,14 +21,45 @@ function normalizePrefix(prefix) {
   return p;
 }
 
+// 规范化并确保存储目录可用，若目标目录无写入权限（如非 root 容器环境）则自动回退至系统临时目录
+function resolveDataDir() {
+  const envDir = process.env.DATA_DIR;
+  const initialDir = envDir
+    ? (path.isAbsolute(envDir) ? envDir : path.resolve(process.cwd(), envDir))
+    : path.resolve(process.cwd(), 'data');
+
+  try {
+    if (!fs.existsSync(initialDir)) {
+      fs.mkdirSync(initialDir, { recursive: true });
+    }
+    // 测试是否具有写权限
+    fs.accessSync(initialDir, fs.constants.W_OK);
+    return initialDir;
+  } catch (err) {
+    console.warn(`[Config] 预设存储目录 (${initialDir}) 创建或写入权限不足 (${err.message})`);
+    const fallbackDir = path.join(os.tmpdir(), 'clawbot-data');
+    try {
+      if (!fs.existsSync(fallbackDir)) {
+        fs.mkdirSync(fallbackDir, { recursive: true });
+      }
+      fs.accessSync(fallbackDir, fs.constants.W_OK);
+      console.warn(`[Config] 已自动切换至临时存储目录: ${fallbackDir} (提示: 临时目录重启后数据可能丢失，生产环境建议在平台挂载持久卷并配置 DATA_DIR)`);
+      return fallbackDir;
+    } catch (fallbackErr) {
+      console.error('[Config] 临时存储目录亦无法使用:', fallbackErr.message);
+      return initialDir;
+    }
+  }
+}
+
 export const config = {
   port: parseInt(process.env.PORT || '8080', 10),
   // 基础访问前缀：默认 /coral，所有外部接口和管理页面均在此前缀下
   routePrefix: normalizePrefix(process.env.ROUTE_PREFIX || '/coral'),
   // 外部调用 /api/send 和管理接口所需的固定密钥
   apiKey: process.env.API_KEY || 'default-secret-change-me',
-  // 持久化存储路径
-  dataDir: process.env.DATA_DIR || path.resolve(process.cwd(), 'data'),
+  // 持久化存储路径（已包含自动回退保护）
+  dataDir: resolveDataDir(),
   ilinkBaseUrl: process.env.ILINK_BASE_URL || 'https://ilinkai.weixin.qq.com',
   // 长轮询保活超时（毫秒），超期由看门狗主动重启轮询
   pollWatchdogTimeoutMs: parseInt(process.env.POLL_TIMEOUT_MS || '60000', 10),

@@ -27,15 +27,15 @@ app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 const router = express.Router();
 
 // 针对 blitz.cloud 与 Cloudflare 边缘代理禁用动态接口缓存
-router.use((req, res, next) => {
+app.use((req, res, next) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
   res.setHeader('Pragma', 'no-cache');
   res.setHeader('Expires', '0');
   next();
 });
 
-// 1. 保活与外部健康检查（无鉴权，便于外部监控如 Uptime Kuma 探测）
-router.get('/health', (req, res) => {
+// 1. 保活与外部健康检查处理函数（无鉴权，便于外部监控如 Uptime Kuma 探测）
+function handleHealth(req, res) {
   res.json({
     status: 'ok',
     gateway_state: iLink.statusDescription,
@@ -47,7 +47,11 @@ router.get('/health', (req, res) => {
     expire_remaining_hours: (iLink.remainingTimeMs / 3600000).toFixed(1),
     timestamp: Date.now()
   });
-});
+}
+
+// 根路径健康检查（无需 ROUTE_PREFIX，直接访问 /health，同时也兼容前缀访问）
+app.get('/health', handleHealth);
+router.get('/health', handleHealth);
 
 // 2. 查看当前网关详细状态（包含配额与失效自动流转信息）
 router.get('/api/status', requireApiKey, (req, res) => {
@@ -271,15 +275,15 @@ function getAdminHtml() {
     .replaceAll('{{BATCH_WINDOW_MS}}', String(config.batchWindowMs));
 }
 
-router.get('/', (req, res) => {
+function handleRootPage(req, res) {
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.send(getAdminHtml());
-});
+}
 
-router.get('/admin', (req, res) => {
-  res.setHeader('Content-Type', 'text/html; charset=utf-8');
-  res.send(getAdminHtml());
-});
+// 根页面支持直接访问（无需 ROUTE_PREFIX，直接访问 /，同时也兼容前缀访问）
+app.get('/', handleRootPage);
+router.get('/', handleRootPage);
+router.get('/admin', handleRootPage);
 
 // 将所有核心功能统一挂载在配置的前缀下（默认 /coral）
 app.use(config.routePrefix, router);
@@ -295,7 +299,7 @@ function handleShutdown(signal) {
   reminderService.stop();
   iLink.pollingActive = false;
   if (iLink.abortController) {
-    try { iLink.abortController.abort(); } catch {}
+    try { iLink.abortController.abort(); } catch { }
   }
   process.exit(0);
 }
@@ -306,9 +310,9 @@ process.on('SIGINT', () => handleShutdown('SIGINT'));
 // 服务启动（显式绑定 0.0.0.0 以适配 blitz.cloud 容器网络接入）
 app.listen(config.port, '0.0.0.0', () => {
   console.log(`[Server] ClawBot 微信通知网关服务已启动！`);
-  console.log(`[Server] 访问前缀: ${config.routePrefix}`);
+  console.log(`[Server] 根页面: http://127.0.0.1:${config.port}/`);
+  console.log(`[Server] 健康检查: http://127.0.0.1:${config.port}/health`);
   console.log(`[Server] 管理后台: http://127.0.0.1:${config.port}${config.routePrefix}/admin`);
-  console.log(`[Server] 健康检查: http://127.0.0.1:${config.port}${config.routePrefix}/health`);
   console.log(`[Server] 推送接口: http://127.0.0.1:${config.port}${config.routePrefix}/api/send`);
   console.log(`[Server] 消息合批窗口: ${config.batchWindowMs}ms | 单会话硬配额: ${config.maxQuota}条`);
 

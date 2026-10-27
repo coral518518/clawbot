@@ -44,9 +44,73 @@ async function humanMouseMove(page, startX, startY, endX, endY) {
     }
 }
 
+/**
+ * 纯 HTTP 模式轻量级唤醒兜底（当 Cloudflare Browser Rendering 触发 429 限流或额度用尽时自动接管）
+ * 直接解析休眠页面上的 blitz-wake token 并提交 GET 唤醒请求，0 消耗浏览器会话配额
+ */
+async function directHttpWake(targetUrl) {
+    console.log(`[HTTP Wake Fallback] Checking target: ${targetUrl}`);
+    const headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+        'Accept-Language': 'zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7',
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'none',
+        'Sec-Fetch-User': '?1',
+        'Upgrade-Insecure-Requests': '1',
+    };
+
+    const res = await fetch(targetUrl, { headers });
+    const html = await res.text();
+    console.log(`[HTTP Wake Fallback] Response HTTP status: ${res.status}`);
+
+    // 从页面提取隐藏表单中的 blitz-wake token
+    const tokenMatch = html.match(/name=["']blitz-wake["']\s+value=["']([^"']+)["']/i) ||
+        html.match(/value=["']([^"']+)["']\s+name=["']blitz-wake["']/i);
+
+    if (tokenMatch && tokenMatch[1]) {
+        const token = tokenMatch[1];
+        console.log(`[HTTP Wake Fallback] Asleep page detected! Token: ${token.slice(0, 8)}...`);
+        const wakeUrl = new URL(targetUrl);
+        wakeUrl.searchParams.set('blitz-wake', token);
+
+        console.log(`[HTTP Wake Fallback] Sending GET wake request: ${wakeUrl.toString()}`);
+        const wakeRes = await fetch(wakeUrl.toString(), { headers });
+        const wakeText = await wakeRes.text();
+        const isWaking = wakeText.includes('waking up') || wakeText.includes('Starting container');
+        console.log(`[HTTP Wake Fallback] Wake request returned status: ${wakeRes.status}, isWaking=${isWaking}`);
+
+        // 轮询 3 次确认冷启动进展
+        for (let i = 1; i <= 3; i++) {
+            await randomSleep(3000, 4000);
+            try {
+                const checkRes = await fetch(targetUrl, { headers });
+                const checkText = await checkRes.text();
+                const stillAsleep = checkText.includes('This app is asleep');
+                const stillWaking = checkText.includes('waking up') || checkText.includes('Starting container');
+                console.log(`[HTTP Wake Fallback] Poll ${i}: status=${checkRes.status}, stillAsleep=${stillAsleep}, stillWaking=${stillWaking}`);
+                if (!stillAsleep && !stillWaking && checkRes.status === 200) {
+                    console.log(`[HTTP Wake Fallback] Container is online and healthy!`);
+                    break;
+                }
+            } catch (pollErr) {
+                console.warn(`[HTTP Wake Fallback] Poll warning:`, pollErr.message);
+            }
+        }
+        return true;
+    } else if (html.includes('This app is asleep')) {
+        console.warn(`[HTTP Wake Fallback] Page is asleep but token was not found in regex.`);
+        return false;
+    } else {
+        console.log(`[HTTP Wake Fallback] Project is already awake (status ${res.status}).`);
+        return true;
+    }
+}
+
 // 核心改动 1：使用具名导出 export async function scheduled
 export async function scheduled(event, env, ctx) {
-    const targetUrl = env.BLITZ_APP_URL;
+    const targetUrl = env.BLITZ_APP_URL || '';
     if (!targetUrl) {
         console.error('Fatal: BLITZ_APP_URL is missing.');
         return;
@@ -55,14 +119,37 @@ export async function scheduled(event, env, ctx) {
     let browser = null;
 
     try {
-        browser = await puppeteer.launch(env.MY_BROWSER, {
-            args: [
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-blink-features=AutomationControlled',
-                '--lang=zh-CN,zh',
-            ],
-        });
+        // 1. 尝试复用已有活跃浏览器会话，避免触发 429 并发上限限制
+        try {
+            if (typeof puppeteer.sessions === 'function') {
+                const sessions = await puppeteer.sessions(env.MY_BROWSER);
+                if (sessions && sessions.length > 0) {
+                    for (const s of sessions) {
+                        try {
+                            console.log(`[Keep-Alive] Reusing existing active browser session: ${s.sessionId}`);
+                            browser = await puppeteer.connect(env.MY_BROWSER, s.sessionId);
+                            break;
+                        } catch (connErr) {
+                            console.warn(`[Keep-Alive] Reusing session ${s.sessionId} failed: ${connErr.message}`);
+                        }
+                    }
+                }
+            }
+        } catch (sessErr) {
+            console.warn(`[Keep-Alive] Session check error: ${sessErr.message}`);
+        }
+
+        // 2. 若无可用活跃会话，启动新浏览器实例
+        if (!browser) {
+            browser = await puppeteer.launch(env.MY_BROWSER, {
+                args: [
+                    '--no-sandbox',
+                    '--disable-setuid-sandbox',
+                    '--disable-blink-features=AutomationControlled',
+                    '--lang=zh-CN,zh',
+                ],
+            });
+        }
 
         const page = await browser.newPage();
         const viewWidth = getRandomInt(1380, 1440);
@@ -148,30 +235,117 @@ export async function scheduled(event, env, ctx) {
             'Sec-Ch-Ua-Platform': '"Windows"',
         });
 
-        console.log(`Pinging target URL: ${targetUrl}`);
-        const response = await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 25000 });
-        console.log(`Initial response status: ${response ? response.status() : 0}`);
+        console.log(`[Keep-Alive] Opening target URL: ${targetUrl}`);
+        const response = await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        console.log(`[Keep-Alive] Initial HTTP status: ${response ? response.status() : 0}`);
 
-        try {
-            await page.waitForFunction(
-                () => {
-                    const text = (document.body && document.body.innerText) || '';
-                    return !text.includes('Waking up') && !text.includes('Starting container') && !text.includes('503 Service Temporarily Unavailable');
-                },
-                { timeout: 12000, polling: 1000 }
+        await randomSleep(800, 1500);
+
+        // 1. 检查是否处于 blitz 休眠拦截页 (<main data-kind="asleep"> 或含 "This app is asleep")
+        const sleepState = await page.evaluate(() => {
+            const asleepCard = document.querySelector('[data-kind="asleep"]');
+            const wakeForm = document.querySelector('form input[name="blitz-wake"]');
+            const title = document.title || '';
+            const bodyText = (document.body && document.body.innerText) || '';
+            const isAsleep = Boolean(
+                asleepCard ||
+                wakeForm ||
+                title.includes('asleep') ||
+                bodyText.includes('This app is asleep') ||
+                bodyText.includes('Wake it up')
             );
-        } catch (_) { }
+            return {
+                isAsleep,
+                title,
+                hasWakeForm: Boolean(wakeForm),
+            };
+        });
 
-        let curX = getRandomInt(80, 180);
-        let curY = getRandomInt(100, 220);
+        console.log(`[Keep-Alive] Page status: isAsleep=${sleepState.isAsleep}, title="${sleepState.title}"`);
+
+        let curX = getRandomInt(100, 200);
+        let curY = getRandomInt(120, 220);
         await page.mouse.move(curX, curY);
 
-        let targetX = getRandomInt(400, 700);
-        let targetY = getRandomInt(300, 500);
+        if (sleepState.isAsleep) {
+            console.log(`[Keep-Alive] Blitz instance is ASLEEP! Locating 'Wake it up' button...`);
+
+            // 智能查找唤醒按钮（包含 submit 按钮、带 blitz-wake 的表单按钮、.btn 类等）
+            const wakeBtnHandle = await page.$('[data-kind="asleep"] button, form input[name="blitz-wake"] ~ p button, form button[type="submit"], button.btn');
+
+            let clicked = false;
+            if (wakeBtnHandle) {
+                const box = await wakeBtnHandle.boundingBox();
+                if (box) {
+                    const btnX = box.x + box.width / 2 + getRandomInt(-6, 6);
+                    const btnY = box.y + box.height / 2 + getRandomInt(-4, 4);
+                    console.log(`[Keep-Alive] Simulating human Bezier mouse trajectory to 'Wake it up' button at (${Math.round(btnX)}, ${Math.round(btnY)})...`);
+                    await humanMouseMove(page, curX, curY, btnX, btnY);
+                    curX = btnX;
+                    curY = btnY;
+                    await randomSleep(200, 500);
+                    console.log(`[Keep-Alive] Clicking 'Wake it up' button...`);
+                    await page.mouse.click(btnX, btnY, { delay: getRandomInt(80, 140) });
+                    clicked = true;
+                } else {
+                    console.log(`[Keep-Alive] Button bounding box not available, triggering direct handle.click()...`);
+                    await wakeBtnHandle.click();
+                    clicked = true;
+                }
+            }
+
+            // 双重兜底：如果点击未触发跳转，经过 2 秒检查后直接调用表单 submit()
+            await randomSleep(1500, 2500);
+            const stillAsleepCheck = await page.evaluate(() => {
+                return Boolean(document.querySelector('[data-kind="asleep"]') || document.querySelector('input[name="blitz-wake"]'));
+            });
+
+            if (stillAsleepCheck) {
+                console.log(`[Keep-Alive] Still on asleep page, executing form.submit() fallback...`);
+                await page.evaluate(() => {
+                    const form = document.querySelector('form input[name="blitz-wake"]')?.closest('form') || document.querySelector('form');
+                    if (form) form.submit();
+                });
+            }
+
+            // 等待容器冷启动完成（Blitz 通常会进入 "waking up" 页面，耗时约 5-15 秒启动容器）
+            console.log(`[Keep-Alive] Waiting for container cold start to complete...`);
+            const maxWaitMs = 35000;
+            const startWait = Date.now();
+            let appReady = false;
+
+            while (Date.now() - startWait < maxWaitMs) {
+                await randomSleep(2000, 3000);
+                const check = await page.evaluate(() => {
+                    const title = document.title || '';
+                    const body = (document.body && document.body.innerText) || '';
+                    const asleep = Boolean(document.querySelector('[data-kind="asleep"]') || body.includes('This app is asleep'));
+                    const waking = Boolean(title.includes('waking up') || body.includes('waking up') || body.includes('Starting container'));
+                    return { title, asleep, waking };
+                });
+
+                console.log(`[Keep-Alive] Polling container status: title="${check.title}", asleep=${check.asleep}, waking=${check.waking}`);
+
+                if (!check.asleep && !check.waking) {
+                    appReady = true;
+                    console.log(`[Keep-Alive] Cold start finished! Project is online.`);
+                    break;
+                }
+            }
+        } else {
+            console.log(`[Keep-Alive] Project is already online (not asleep).`);
+        }
+
+        // 2. 容器上线后，在实际项目页面模拟真人行为（鼠标平滑轨迹、滚动与安全空白处点击），向 Blitz 登记真实活跃会话
+        await randomSleep(800, 1500);
+
+        let targetX = getRandomInt(350, 650);
+        let targetY = getRandomInt(250, 480);
         await humanMouseMove(page, curX, curY, targetX, targetY);
         curX = targetX;
         curY = targetY;
 
+        // 仅在非敏感元素（非链接、非按钮、非表单）上点击，激活窗口焦点的同时防止误点应用功能
         const isSafeNode = await page.evaluate((x, y) => {
             const el = document.elementFromPoint(x, y);
             if (!el) return false;
@@ -186,15 +360,27 @@ export async function scheduled(event, env, ctx) {
             await page.mouse.click(curX, curY, { delay: getRandomInt(60, 100) });
         }
 
-        await randomSleep(300, 600);
+        await randomSleep(400, 700);
         await page.evaluate(() => window.scrollBy({ top: 260, behavior: 'smooth' }));
         await randomSleep(500, 800);
         await page.evaluate(() => window.scrollBy({ top: -80, behavior: 'smooth' }));
 
+        // 保持 3-5 秒建立稳定的心跳与连接
         await randomSleep(3000, 5000);
-        console.log('Keep-alive ping finished.');
+        console.log('[Keep-Alive] Keep-alive ping finished successfully.');
     } catch (err) {
-        console.error('Execution failure during keep-alive:', err.message);
+        console.error('[Keep-Alive] Execution failure during keep-alive:', err.message);
+
+        // 关键容灾兜底：当遇到 429 限流或浏览器无法启动时，无缝切换为纯 HTTP Token 唤醒
+        if (err.message && (err.message.includes('429') || err.message.includes('Unable to create new browser') || err.message.includes('Rate limit exceeded'))) {
+            console.log('[Keep-Alive] Cloudflare browser rate limited (429). Triggering direct HTTP token-wake fallback...');
+            try {
+                await directHttpWake(targetUrl);
+                console.log('[Keep-Alive] Fallback direct HTTP wake completed.');
+            } catch (fallbackErr) {
+                console.error('[Keep-Alive] Fallback direct HTTP wake failed:', fallbackErr.message);
+            }
+        }
     } finally {
         if (browser) {
             try {
@@ -209,7 +395,7 @@ export async function scheduled(event, env, ctx) {
 export async function fetch(req, env, ctx) {
     const url = new URL(req.url);
     const pathname = url.pathname.replace(/\/+$/, '') || '/';
-    const targetUrl = env.BLITZ_APP_URL || '';
+    const targetUrl = env.BLITZ_APP_URL || 'https://clawbot.coral.blitz.cloud';
     const isConfigured = Boolean(targetUrl && !targetUrl.includes('your-blitz-instance'));
 
     // 手动触发保活接口 (/trigger 或 /coral/trigger)
@@ -323,8 +509,8 @@ export async function fetch(req, env, ctx) {
                 <div class="info-val">${isConfigured ? '<span style="color:#34d399">● 目标服务已配置（地址已保护隐藏）</span>' : '<span style="color:#f87171">尚未配置目标网址</span>'}</div>
             </div>
             <div class="info-card">
-                <div class="info-title">定时执行周期 (Cron Triggers)</div>
-                <div class="info-val"><code>*/21 * * * *</code> (每 21 分钟自动执行一次拟人操作)</div>
+                <div class="info-title">保活触发模式 (Trigger Mode)</div>
+                <div class="info-val">接口调用 <code>/trigger</code> 或 <code>/coral/trigger</code> (双引擎保活：拟人浏览器 + 429 HTTP 自动容灾)</div>
             </div>
             <div class="info-card">
                 <div class="info-title">浏览器渲染引擎 (Browser Binding)</div>
@@ -351,7 +537,8 @@ export async function fetch(req, env, ctx) {
         return new Response(JSON.stringify({
             service: 'blitz-keepalive',
             status: isConfigured ? 'active' : 'needs_configuration',
-            cron: '*/21 * * * *'
+            cron: '*/20 * * * *',
+            feature: 'blitz-gate-auto-wake'
         }, null, 2), {
             headers: { 'Content-Type': 'application/json; charset=utf-8' }
         });

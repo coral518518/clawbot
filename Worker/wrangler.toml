@@ -6,4 +6,4 @@ compatibility_flags = ["nodejs_compat"]
 browser = { binding = "MY_BROWSER" }
 
 [vars]
-#BLITZ_APP_URL = "https://clawbot.coral.blitz.cloud"
+BLITZ_APP_URL = "https://clawbot.coral.blitz.cloud"

@@ -1109,15 +1109,18 @@
 
     async function manualPullState() {
       try {
-        const res = await fetch(PREFIX + '/api/cluster/state', {
+        const res = await fetch(PREFIX + '/api/cluster/pull', {
+          method: 'POST',
           headers: { 'X-API-Key': apiKey }
         });
         const data = await res.json();
         if (data.success && data.state) {
-          alert('成功拉取到状态！当前有效 Token: ' + Boolean(data.state.contextToken));
+          const hasBot = Boolean(data.state.botToken);
+          const hasCtx = Boolean(data.state.contextToken);
+          alert('✓ 成功从对端拉取并安全合并最新状态！\n\n• 微信账号绑定: ' + (hasBot ? '已绑定' : '未绑定') + '\n• 会话凭证: ' + (hasCtx ? '有效' : '未激活'));
           checkState();
         } else {
-          alert('拉取对端状态未返回有效数据');
+          alert('拉取对端状态未返回有效数据: ' + (data.error || '未知错误'));
         }
       } catch (err) {
         alert('拉取失败: ' + err.message);

@@ -2,6 +2,69 @@ import { config } from './config.js';
 import { storage } from './storage.js';
 
 /**
+ * 安全合并对端状态，防止对端的空凭证覆盖本地有效凭证
+ * 规则：
+ * 1. 若 incoming 标记了 isExplicitLogout（用户主动在管理后台注销），允许合法清空本地凭证；
+ * 2. 若 local 存在有效的 botToken，而 incoming.botToken 为空且未显式注销，坚决保留 local 的 botToken、botId、userId；
+ * 3. 比较时间戳：若 incoming.updatedAt >= local.updatedAt，允许更新 contextToken、quota、cursor、webhook 等业务动态字段；
+ * 4. 其它情况保留两者中更全面有价值的数据。
+ */
+export function mergeAuthState(local, incoming) {
+  if (!incoming || typeof incoming !== 'object') return local;
+  if (!local || typeof local !== 'object') return { ...incoming };
+
+  // 1. 若用户显式注销登录，允许清空凭证
+  if (incoming.isExplicitLogout) {
+    return { ...incoming };
+  }
+
+  const result = { ...local };
+  const incomingHasToken = Boolean(incoming.botToken);
+  const localHasToken = Boolean(local.botToken);
+
+  const incomingTime = Number(incoming.updatedAt || incoming.lastActiveTime || 0);
+  const localTime = Number(local.updatedAt || local.lastActiveTime || 0);
+
+  if (incomingHasToken) {
+    // 对端有有效 Token：比较时间戳，若对端更新或本地本无 Token，则采纳对端 Token 及相关字段
+    if (!localHasToken || incomingTime >= localTime) {
+      result.botToken = incoming.botToken;
+      result.botId = incoming.botId;
+      result.userId = incoming.userId;
+      result.userWechatId = incoming.userWechatId || incoming.userId;
+    }
+  } else if (localHasToken) {
+    console.warn('[Cluster] 拦截到对端空凭证同步请求，本地有效微信凭证已受保护，拒绝抹除！');
+  }
+
+  // 业务动态字段（ContextToken, 剩余配额, 游标, Webhook 状态等）按时间戳更新
+  if (incomingTime >= localTime) {
+    if (incoming.contextToken !== undefined && (incoming.contextToken || !local.contextToken)) {
+      result.contextToken = incoming.contextToken;
+      result.contextTokenUsedCount = incoming.contextTokenUsedCount ?? result.contextTokenUsedCount;
+      result.contextTokenCreatedAt = incoming.contextTokenCreatedAt ?? result.contextTokenCreatedAt;
+      result.contextTokenExpireAt = incoming.contextTokenExpireAt ?? result.contextTokenExpireAt;
+    }
+    if (incoming.syncBuf) result.syncBuf = incoming.syncBuf;
+    if (incoming.lastActiveTime) result.lastActiveTime = incoming.lastActiveTime;
+    if (incoming.invalidationReason !== undefined) {
+      if (incomingHasToken || !localHasToken) {
+        result.invalidationReason = incoming.invalidationReason;
+      }
+    }
+    if (incoming.reminderSentToken) result.reminderSentToken = incoming.reminderSentToken;
+    if (incoming.reminderSentAt) result.reminderSentAt = incoming.reminderSentAt;
+    if (incoming.webhookTriggeredToken) result.webhookTriggeredToken = incoming.webhookTriggeredToken;
+    if (incoming.webhookTriggeredAt) result.webhookTriggeredAt = incoming.webhookTriggeredAt;
+    if (incoming.webhookLastStatus !== undefined) result.webhookLastStatus = incoming.webhookLastStatus;
+    if (incoming.webhookLastError !== undefined) result.webhookLastError = incoming.webhookLastError;
+    result.updatedAt = Math.max(incomingTime, Date.now());
+  }
+
+  return result;
+}
+
+/**
  * ClusterManager: 跨云双机对等高可用集群协调器 (Blitz Cloud <-> Miget)
  * 职责：
  * 1. 自动主备选举（Master / Standby），保证全集群永远只有 1 个实例运行长轮询与定时任务；
@@ -115,11 +178,16 @@ export class ClusterManager {
   /**
    * 降级为备节点 (Demote to Standby)
    */
-  demoteToStandby(reason = '让出 Master 权限') {
+  async demoteToStandby(reason = '让出 Master 权限') {
     if (this.role === 'standby') return;
     console.warn(`[Cluster] ⚡ 主备协调：当前节点降级为 STANDBY！原因: ${reason}`);
     this.stopMasterTasks();
-    this.pullStateFromPeer();
+    // 降级前，若本地有有效凭据，主动向刚醒来的主机推送最新状态，确保主机拿到最新凭证
+    const local = storage.get() || this.iLink.state;
+    if (local && local.botToken) {
+      await this.syncToPeer(local).catch(() => {});
+    }
+    await this.pullStateFromPeer();
   }
 
   /**
@@ -162,15 +230,12 @@ export class ClusterManager {
         const body = await res.json();
         if (body && body.state) {
           const incoming = body.state;
-          const local = storage.get();
-          const incomingTime = incoming.updatedAt || incoming.lastActiveTime || 0;
-          const localTime = local ? (local.updatedAt || local.lastActiveTime || 0) : 0;
+          const local = storage.get() || this.iLink.state;
+          const merged = mergeAuthState(local, incoming);
 
-          if (!local || incomingTime >= localTime) {
-            storage.set(incoming, false); // false: 避免再次反向触发推送
-            this.iLink.state = incoming;
-            console.log('[Cluster] 已成功从对端拉取并应用最新 auth_state.json');
-          }
+          storage.set(merged, false); // false: 避免再次反向触发推送
+          this.iLink.state = merged;
+          console.log('[Cluster] 已成功从对端拉取并安全合并最新 auth_state.json');
         }
       }
     } catch (err) {
@@ -183,9 +248,12 @@ export class ClusterManager {
    */
   handleIncomingSync(incomingState) {
     if (!incomingState || typeof incomingState !== 'object') return false;
-    storage.set(incomingState, false); // false: 禁止二次广播，防止死循环
-    this.iLink.state = incomingState;
-    console.log('[Cluster] 已收到并落盘对端同步的最新 auth_state.json');
+    const local = storage.get() || this.iLink.state;
+    const merged = mergeAuthState(local, incomingState);
+
+    storage.set(merged, false); // false: 禁止二次广播，防止死循环
+    this.iLink.state = merged;
+    console.log('[Cluster] 已收到并安全合并对端同步的最新 auth_state.json');
 
     // 若本节点当前是 Master 且此前未启动轮询（如用户是在对端备机扫码绑定的），则自动激活长轮询
     if (this.role === 'master' && this.iLink.state.botToken && !this.iLink.pollingActive) {
@@ -205,22 +273,65 @@ export class ClusterManager {
 
   async _probePeer() {
     if (!this.peerUrl) return { online: false };
+
+    // 严密检查响应是否为 Blitz 休眠拦截页面
+    const isAsleepResponse = (text, contentType, status) => {
+      if (status === 502 || status === 503 || status === 504) return true;
+      if (!text || typeof text !== 'string') return false;
+      if (contentType && contentType.toLowerCase().includes('text/html')) {
+        return true; // 集群接口绝不可能返回 HTML，凡是 HTML 必然是平台休眠/拦截网关
+      }
+      return text.includes('This app is asleep') ||
+             text.includes('data-kind="asleep"') ||
+             text.includes('blitz-wake') ||
+             text.includes('Starting container') ||
+             text.includes('waking up') ||
+             text.includes('<!DOCTYPE html>');
+    };
+
     try {
       const res = await fetch(`${this.peerUrl}${config.routePrefix}/api/cluster/status`, {
         headers: { 'x-api-key': config.apiKey },
         signal: AbortSignal.timeout(4500)
       });
-      if (res.ok) {
-        const data = await res.json();
-        return { online: true, role: data.role, ...data };
+      const contentType = res.headers.get('content-type') || '';
+      const text = await res.text();
+
+      if (isAsleepResponse(text, contentType, res.status)) {
+        return { online: false, isAsleep: true, reason: '对端实例处于休眠状态' };
+      }
+
+      if (res.ok && contentType.includes('application/json')) {
+        try {
+          const data = JSON.parse(text);
+          if (data && typeof data === 'object' && data.success) {
+            return { online: true, role: data.role, ...data };
+          }
+        } catch {}
       }
     } catch {
-      // 兼容直接探测 /health
-      try {
-        const fallbackRes = await fetch(`${this.peerUrl}/health`, { signal: AbortSignal.timeout(4500) });
-        if (fallbackRes.ok) return { online: true, role: 'master' };
-      } catch {}
+      // 接口网络错误或超时
     }
+
+    // 兼容直接探测 /health (严格校验 JSON 与 status: ok)
+    try {
+      const fallbackRes = await fetch(`${this.peerUrl}/health`, { signal: AbortSignal.timeout(4500) });
+      const fallbackContentType = fallbackRes.headers.get('content-type') || '';
+      const fallbackText = await fallbackRes.text();
+
+      if (isAsleepResponse(fallbackText, fallbackContentType, fallbackRes.status)) {
+        return { online: false, isAsleep: true, reason: '对端实例处于休眠状态' };
+      }
+
+      if (fallbackRes.ok && fallbackContentType.includes('application/json')) {
+        const fallbackData = JSON.parse(fallbackText);
+        if (fallbackData && fallbackData.status === 'ok') {
+          const fallbackRole = fallbackData.cluster?.role || 'master';
+          return { online: true, role: fallbackRole, ...fallbackData };
+        }
+      }
+    } catch {}
+
     return { online: false };
   }
 
@@ -254,12 +365,12 @@ export class ClusterManager {
       if (this.role === 'standby') {
         this.failureCount++;
         const maxRetries = 3;
-        console.warn(`[Cluster] 主节点 (${this.peerUrl}) 心跳无响应 [${this.failureCount}/${maxRetries}]`);
+        console.warn(`[Cluster] 主节点 (${this.peerUrl}) 心跳无响应 [${this.failureCount}/${maxRetries}]${probe.isAsleep ? ' (对端已休眠)' : ''}`);
 
         // 连续 3 次心跳失败（约 45 秒），自动晋升为主节点接管工作！
         if (this.failureCount >= maxRetries) {
           this.failureCount = 0;
-          this.promoteToMaster(`主节点连续 ${maxRetries} 次无心跳响应，自动故障接管`);
+          this.promoteToMaster(`主节点连续 ${maxRetries} 次无心跳响应${probe.isAsleep ? '(休眠)' : ''}，自动故障接管`);
         }
       }
     }

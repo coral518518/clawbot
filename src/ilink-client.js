@@ -273,6 +273,8 @@ export class ILinkClient {
       this.state.webhookTriggeredAt = null;
       this.state.webhookLastStatus = null;
       this.state.webhookLastError = null;
+      this.sessionInvalidAttempts = 0;
+      delete this.state.isExplicitLogout;
       this.state.invalidationReason = '已扫码完成，请在手机微信向 Bot 发送任意文本（如发送 1）以满血激活';
       this.state.lastActiveTime = Date.now();
       storage.set(this.state);
@@ -314,11 +316,29 @@ export class ILinkClient {
       const code = data.ret ?? data.errcode ?? data.retcode;
       console.warn(`[iLink] getupdates 业务状态提示: code=${code}, errmsg=${data.errmsg || '无'}`);
       if (code === -14) {
-        console.error('[iLink] 微信登录态已过期 (-14)，需重新扫码');
-        this.state.botToken = null;
-        this.state.invalidationReason = '微信登录态已过期 (-14)，需重新扫码';
-        storage.set(this.state);
+        this.sessionInvalidAttempts = (this.sessionInvalidAttempts || 0) + 1;
+        console.warn(`[iLink] 微信返回 Session 已过期或冲突 (-14) [连续次数: ${this.sessionInvalidAttempts}/3]`);
+
+        // 如果并非运行中的长轮询（如已经被降级或停用），绝不清除凭据
+        if (!this.pollingActive) {
+          return { captured: false, count: 0 };
+        }
+
+        // 避免主备切换时瞬间的双机轮询冲突导致直接双亡：前2次尝试重新发送 notifyStart 续约重连
+        if (this.sessionInvalidAttempts < 3) {
+          console.warn('[iLink] 疑似主备切换或瞬态会话冲突，正在尝试重新发送 notifyStart 并保持凭证...');
+          this.notifyStart().catch(() => {});
+        } else {
+          console.error('[iLink] 微信登录态连续 3 次确认过期 (-14)，需重新扫码');
+          this.state.botToken = null;
+          this.state.invalidationReason = '微信登录态已过期 (-14)，需重新扫码';
+          storage.set(this.state);
+        }
+      } else {
+        this.sessionInvalidAttempts = 0;
       }
+    } else {
+      this.sessionInvalidAttempts = 0;
     }
 
     let captured = false;
@@ -647,6 +667,7 @@ export class ILinkClient {
       try { this.abortController.abort(); } catch { }
     }
     clearTimeout(this.watchdogTimer);
+    this.sessionInvalidAttempts = 0;
     this.state = {
       botToken: null,
       botId: null,
@@ -663,9 +684,11 @@ export class ILinkClient {
       webhookTriggeredToken: null,
       webhookTriggeredAt: null,
       webhookLastStatus: null,
-      webhookLastError: null
+      webhookLastError: null,
+      isExplicitLogout: true, // 显式标记为用户主动解绑，允许集群对端清空
+      updatedAt: Date.now()
     };
-    storage.clear();
+    storage.set(this.state);
     console.log('[iLink] 已清除本地登录与授权凭据');
   }
 }

@@ -521,19 +521,19 @@
       </div>
     </div>
 
-    <!-- 1.5 双机高可用集群状态卡片 (跨云热备) -->
+    <!-- 1.5 高可用多节点热备集群 (Netrun · Miget · Blitz) -->
     <div class="card" id="clusterCard" style="display: none;">
       <h2>
-        <span>双机高可用热备集群 (Blitz Cloud & Miget)</span>
-        <span id="clusterStatusText" style="font-size: 13px; font-weight: normal; color: var(--text-muted);">跨云双机互备</span>
+        <span>高可用热备集群 (Netrun · Miget · Blitz)</span>
+        <span id="clusterStatusText" style="font-size: 13px; font-weight: normal; color: var(--text-muted);">跨云分级互备</span>
       </h2>
       <div class="tip-box">
-        已启用双机对等状态同步与故障自愈回路：Master 负责维持微信长轮询与定时提醒任务，任何凭据变更均会自动推送到对端 Standby。<br>
-        一旦 Master 宕机或网络中断，Standby 节点将自动晋升接管，实现无人值守平滑容灾。
+        已启用多节点对等同步与分级故障转移：Master 负责维持微信长轮询与守护任务，所有凭据变更实时全网并发同步。<br>
+        一旦主节点故障或休眠，存活备机中<strong>权重最高</strong>的节点将自动晋升接管，实现无人值守平滑容灾。
       </div>
       <div class="info-grid">
         <div class="info-item">
-          <div class="info-label">本节点角色</div>
+          <div class="info-label">本节点角色与权重</div>
           <div class="info-value" id="valClusterRole">-</div>
         </div>
         <div class="info-item">
@@ -541,18 +541,27 @@
           <div class="info-value" id="valClusterTasks">-</div>
         </div>
         <div class="info-item">
-          <div class="info-label">对端节点存活状态</div>
-          <div class="info-value" id="valClusterPeerStatus">-</div>
+          <div class="info-label">集群主控状态</div>
+          <div class="info-value" id="valClusterHealth">-</div>
         </div>
         <div class="info-item">
-          <div class="info-label">对端节点地址</div>
-          <div class="info-value" id="valClusterPeerUrl" style="font-size: 11px; word-break: break-all;">-</div>
+          <div class="info-label">集群节点规模</div>
+          <div class="info-value" id="valClusterPeerCount">-</div>
         </div>
       </div>
+
+      <div style="margin-top: 14px;">
+        <div style="font-size: 12px; font-weight: 600; margin-bottom: 8px; color: var(--text-muted); display: flex; justify-content: space-between; align-items: center;">
+          <span>集群其他对端节点状态</span>
+          <span style="font-size: 11px; font-weight: normal;">自动心跳周期探测</span>
+        </div>
+        <div id="valClusterPeersList" style="display: flex; flex-direction: column; gap: 8px;"></div>
+      </div>
+
       <div style="display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap;">
         <button class="btn btn-secondary" onclick="manualPromote()" style="font-size: 12px; padding: 6px 14px;">👑 手动晋升为 Master (激活任务)</button>
         <button class="btn btn-secondary" onclick="manualDemote()" style="font-size: 12px; padding: 6px 14px;">⏸ 手动降级为 Standby (让出权限)</button>
-        <button class="btn btn-secondary" onclick="manualPullState()" style="font-size: 12px; padding: 6px 14px;">🔄 从对端强制拉取最新凭证</button>
+        <button class="btn btn-secondary" onclick="manualPullState()" style="font-size: 12px; padding: 6px 14px;">🔄 从集群拉取最新凭证</button>
       </div>
       <div id="clusterFeedback" class="feedback-msg"></div>
     </div>
@@ -673,6 +682,8 @@
           cb.style.display = 'inline-flex';
 
           const isMaster = c.role === 'master';
+          const priority = c.priority !== undefined ? c.priority : 50;
+
           if (isMaster) {
             cb.style.background = 'rgba(16, 185, 129, 0.15)';
             cb.style.color = '#34d399';
@@ -680,8 +691,8 @@
             cd.style.background = '#34d399';
             ct.innerText = '★ 主节点 (Master · 任务活跃)';
 
-            document.getElementById('valClusterRole').innerHTML = '<span style="color:#34d399; font-weight:600;">👑 主节点 (Master)</span>';
-            document.getElementById('valClusterTasks').innerHTML = '<span style="color:#34d399;">● 微信长轮询与守护任务正常运行中</span>';
+            document.getElementById('valClusterRole').innerHTML = '<span style="color:#34d399; font-weight:600;">👑 主节点 (Master)</span> <span style="font-size:11px; opacity:0.8; margin-left:4px;">[权重: ' + priority + ']</span>';
+            document.getElementById('valClusterTasks').innerHTML = '<span style="color:#34d399;">● 微信长轮询与守护任务运行中</span>';
           } else {
             cb.style.background = 'rgba(245, 158, 11, 0.15)';
             cb.style.color = '#fbbf24';
@@ -689,17 +700,40 @@
             cd.style.background = '#fbbf24';
             ct.innerText = '⏸ 备节点 (Standby · 静默待命)';
 
-            document.getElementById('valClusterRole').innerHTML = '<span style="color:#fbbf24; font-weight:600;">⏸ 备用节点 (Standby)</span>';
-            document.getElementById('valClusterTasks').innerHTML = '<span style="color:#94a3b8;">静默待命中 (故障时将自动顶替接管)</span>';
+            document.getElementById('valClusterRole').innerHTML = '<span style="color:#fbbf24; font-weight:600;">⏸ 备用节点 (Standby)</span> <span style="font-size:11px; opacity:0.8; margin-left:4px;">[权重: ' + priority + ']</span>';
+            document.getElementById('valClusterTasks').innerHTML = '<span style="color:#94a3b8;">静默待命中 (故障时按权重自动顶替)</span>';
           }
 
-          document.getElementById('valClusterPeerUrl').innerText = c.peerUrl || '未配置';
-          if (c.peerOnline === true) {
-            document.getElementById('valClusterPeerStatus').innerHTML = '<span style="color:#34d399;">● 对端在线 (' + (c.peerRole || 'active') + ')</span>';
-          } else if (c.peerOnline === false) {
-            document.getElementById('valClusterPeerStatus').innerHTML = '<span style="color:#f87171;">● 对端失联 (失败 ' + (c.failureCount || 0) + ' 次)</span>';
+          const peers = Array.isArray(c.peers) ? c.peers : [];
+          const hasMasterOnline = isMaster || peers.some(p => p.online && p.role === 'master');
+          if (hasMasterOnline) {
+            document.getElementById('valClusterHealth').innerHTML = '<span style="color:#34d399;">● 正常 (主控存活运行中)</span>';
           } else {
-            document.getElementById('valClusterPeerStatus').innerHTML = '<span style="color:#94a3b8;">探测中...</span>';
+            document.getElementById('valClusterHealth').innerHTML = '<span style="color:#f87171;">▲ 报警 (无活跃 Master，选举中)</span>';
+          }
+          document.getElementById('valClusterPeerCount').innerText = (peers.length + 1) + ' 节点集群 (本节点 + ' + peers.length + ' 备用)';
+
+          // 渲染对端节点列表
+          const peersListEl = document.getElementById('valClusterPeersList');
+          if (peers.length === 0) {
+            peersListEl.innerHTML = '<div style="font-size:12px; color:var(--text-muted); padding:8px; background:rgba(0,0,0,0.2); border-radius:6px;">未配置其他对端节点</div>';
+          } else {
+            peersListEl.innerHTML = peers.map(p => {
+              let statusBadge = '<span style="color:#94a3b8; font-size:11px;">探测中...</span>';
+              if (p.isAsleep) {
+                statusBadge = '<span style="color:#fbbf24; font-size:11px;">⏸ 实例休眠</span>';
+              } else if (p.online) {
+                const roleBadge = p.role === 'master' ? '<strong style="color:#34d399;">👑 Master</strong>' : '<span style="color:#94a3b8;">⏸ Standby</span>';
+                statusBadge = '<span style="color:#34d399; font-size:11px;">● 在线</span> ' + roleBadge;
+              } else {
+                statusBadge = '<span style="color:#f87171; font-size:11px;">× 离线/失联</span>';
+              }
+
+              return '<div style="background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.06); padding:8px 12px; border-radius:6px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px;">' +
+                '<div style="font-size:12px; font-family:monospace; word-break:break-all;">' + p.url + ' <span style="color:var(--text-muted); font-size:11px;">[权重: ' + (p.priority || 50) + ']</span></div>' +
+                '<div style="display:flex; align-items:center; gap:8px;">' + statusBadge + '</div>' +
+              '</div>';
+            }).join('');
           }
         }
 
@@ -1117,10 +1151,10 @@
         if (data.success && data.state) {
           const hasBot = Boolean(data.state.botToken);
           const hasCtx = Boolean(data.state.contextToken);
-          alert('✓ 成功从对端拉取并安全合并最新状态！\n\n• 微信账号绑定: ' + (hasBot ? '已绑定' : '未绑定') + '\n• 会话凭证: ' + (hasCtx ? '有效' : '未激活'));
+          alert('✓ 成功从集群拉取并安全合并最新状态！\n\n• 微信账号绑定: ' + (hasBot ? '已绑定' : '未绑定') + '\n• 会话凭证: ' + (hasCtx ? '有效' : '未激活'));
           checkState();
         } else {
-          alert('拉取对端状态未返回有效数据: ' + (data.error || '未知错误'));
+          alert('拉取集群状态未返回有效数据: ' + (data.error || '未知错误'));
         }
       } catch (err) {
         alert('拉取失败: ' + err.message);

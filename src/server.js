@@ -292,6 +292,8 @@ router.get('/api/cluster/state', requireApiKey, (req, res) => {
   res.json({
     success: true,
     role: clusterManager.role,
+    priority: clusterManager.nodePriority,
+    lastRoleChangeAt: clusterManager.lastRoleChangeAt,
     state: currentState,
     timestamp: Date.now()
   });
@@ -300,10 +302,11 @@ router.get('/api/cluster/state', requireApiKey, (req, res) => {
 // 手动从对端主动拉取最新状态并安全落盘
 router.post('/api/cluster/pull', requireApiKey, async (req, res) => {
   try {
-    await clusterManager.pullStateFromPeer(true);
+    const targetPeer = req.query.peer || req.body?.peer || null;
+    await clusterManager.pullStateFromPeers(targetPeer, true);
     res.json({
       success: true,
-      message: '已向对端主动拉取并安全合并最新状态',
+      message: '已向集群对端主动拉取并安全合并最新状态',
       state: storage.get() || iLink.state
     });
   } catch (err) {

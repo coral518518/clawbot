@@ -52,6 +52,29 @@ function resolveDataDir() {
   }
 }
 
+// 解析集群对端列表（支持逗号分隔的 PEER_URLS 或单对端 PEER_URL）
+function parsePeerUrls() {
+  const raw = process.env.PEER_URLS || process.env.PEER_URL || '';
+  return raw
+    .split(',')
+    .map(u => u.trim().replace(/\/+$/, ''))
+    .filter(u => u.length > 0);
+}
+
+// 解析节点优先级权重（用于多节点故障转移选举，数值越高优先级越高）
+function resolveNodePriority(role) {
+  if (process.env.NODE_PRIORITY !== undefined && process.env.NODE_PRIORITY !== '') {
+    const p = parseInt(process.env.NODE_PRIORITY, 10);
+    if (!isNaN(p)) return p;
+  }
+  if (role === 'master') return 100;
+  if (role === 'standby') return 50;
+  return 50;
+}
+
+const parsedNodeRole = (process.env.NODE_ROLE || 'auto').trim().toLowerCase();
+const parsedPeerUrls = parsePeerUrls();
+
 export const config = {
   port: parseInt(process.env.PORT || '5000', 10),
   // 基础访问前缀：默认 /coral，所有外部接口和管理页面均在此前缀下
@@ -70,9 +93,11 @@ export const config = {
   // 到期前半小时 Webhook 任务触发配置
   triggerWebhookUrl: process.env.TRIGGER_WEBHOOK_URL || 'http://job.coral.cc.cd/api/trigger/tasks/6',
   triggerAuthKey: process.env.TRIGGER_AUTH_KEY || '',
-  // 双机高可用集群配置 (如 Blitz Cloud <-> Miget 跨云热备)
-  peerUrl: (process.env.PEER_URL || '').trim().replace(/\/+$/, ''),
-  nodeRole: (process.env.NODE_ROLE || 'auto').trim().toLowerCase(), // 'master' | 'standby' | 'auto'
+  // 多机高可用集群配置 (如 Netrun.io <-> Miget <-> Blitz Cloud 跨云热备)
+  peerUrls: parsedPeerUrls,
+  peerUrl: parsedPeerUrls[0] || '', // 向后兼容旧代码引用
+  nodeRole: parsedNodeRole, // 'master' | 'standby' | 'auto'
+  nodePriority: resolveNodePriority(parsedNodeRole), // 默认：master=100, standby=50
   clusterHeartbeatIntervalMs: parseInt(process.env.CLUSTER_HEARTBEAT_INTERVAL_MS || '15000', 10)
 };
 

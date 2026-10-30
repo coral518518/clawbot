@@ -373,7 +373,8 @@ export class TokenReminderService {
       const res = await fetch(targetUrl, {
         method: 'POST',
         headers,
-        body: JSON.stringify(payload)
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(10000)
       });
 
       const resText = await res.text();

@@ -219,8 +219,11 @@ export class ClusterManager {
   /**
    * 从对端主动拉取最新状态 (Pull Sync)
    */
-  async pullStateFromPeer() {
-    if (!this.peerUrl) return;
+  async pullStateFromPeer(throwOnError = false) {
+    if (!this.peerUrl) {
+      if (throwOnError) throw new Error('未配置 PEER_URL 对端节点地址');
+      return false;
+    }
     try {
       const res = await fetch(`${this.peerUrl}${config.routePrefix}/api/cluster/state`, {
         headers: { 'x-api-key': config.apiKey },
@@ -236,10 +239,23 @@ export class ClusterManager {
           storage.set(merged, false); // false: 避免再次反向触发推送
           this.iLink.state = merged;
           console.log('[Cluster] 已成功从对端拉取并安全合并最新 auth_state.json');
+          return true;
+        } else {
+          console.warn('[Cluster] 从对端拉取的状态数据为空');
+          if (throwOnError) throw new Error('对端返回的状态数据为空');
+          return false;
         }
+      } else {
+        const errData = await res.json().catch(() => null);
+        const errMsg = errData?.error || errData?.message || `HTTP ${res.status}`;
+        console.warn(`[Cluster] 从对端拉取状态返回失败: ${errMsg}`);
+        if (throwOnError) throw new Error(`对端节点返回错误: ${errMsg}`);
+        return false;
       }
     } catch (err) {
       console.warn(`[Cluster] 从对端拉取状态失败 (${err.message})`);
+      if (throwOnError) throw err;
+      return false;
     }
   }
 

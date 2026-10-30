@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { config, saveTriggerConfig } from './config.js';
+import { storage } from './storage.js';
 import { iLink } from './ilink-client.js';
 import { reminderService } from './reminder.js';
 import { requireApiKey, apiLimiter } from './middleware.js';
@@ -299,7 +300,7 @@ router.get('/api/cluster/state', requireApiKey, (req, res) => {
 // 手动从对端主动拉取最新状态并安全落盘
 router.post('/api/cluster/pull', requireApiKey, async (req, res) => {
   try {
-    await clusterManager.pullStateFromPeer();
+    await clusterManager.pullStateFromPeer(true);
     res.json({
       success: true,
       message: '已向对端主动拉取并安全合并最新状态',

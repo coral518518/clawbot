@@ -39,9 +39,13 @@ export const storage = {
   set(data, broadcast = true) {
     ensureDirExists();
     const tempPath = `${AUTH_FILE}.tmp.${Date.now()}`;
-    // 自动维护更新时间戳，用于集群多节点比对最新版本
+    // 自动维护更新时间戳：本地发起的变更 (broadcast=true) 必须强制刷新为当前时间戳，确保集群能感知到最新版本
     if (data && typeof data === 'object') {
-      data.updatedAt = data.updatedAt || Date.now();
+      if (broadcast) {
+        data.updatedAt = Date.now();
+      } else {
+        data.updatedAt = Number(data.updatedAt) || Date.now();
+      }
     }
     const payload = JSON.stringify(data, null, 2);
 

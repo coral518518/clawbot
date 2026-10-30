@@ -386,7 +386,8 @@
         <span>ClawBot 微信纯通知网关</span>
       </h1>
       <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
-        <div id="clusterBadge" class="badge" style="display: none; background: rgba(59, 130, 246, 0.15); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.3);">
+        <div id="clusterBadge" class="badge"
+          style="display: none; background: rgba(59, 130, 246, 0.15); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.3);">
           <span class="badge-dot" id="clusterBadgeDot" style="background: #60a5fa;"></span>
           <span id="clusterBadgeText">集群节点: 单机</span>
         </div>
@@ -525,7 +526,8 @@
     <div class="card" id="clusterCard" style="display: none;">
       <h2>
         <span>高可用热备集群 (Netrun · Miget · Blitz)</span>
-        <span id="clusterStatusText" style="font-size: 13px; font-weight: normal; color: var(--text-muted);">跨云分级互备</span>
+        <span id="clusterStatusText"
+          style="font-size: 13px; font-weight: normal; color: var(--text-muted);">跨云分级互备</span>
       </h2>
       <div class="tip-box">
         已启用多节点对等同步与分级故障转移：Master 负责维持微信长轮询与守护任务，所有凭据变更实时全网并发同步。<br>
@@ -551,7 +553,8 @@
       </div>
 
       <div style="margin-top: 14px;">
-        <div style="font-size: 12px; font-weight: 600; margin-bottom: 8px; color: var(--text-muted); display: flex; justify-content: space-between; align-items: center;">
+        <div
+          style="font-size: 12px; font-weight: 600; margin-bottom: 8px; color: var(--text-muted); display: flex; justify-content: space-between; align-items: center;">
           <span>集群其他对端节点状态</span>
           <span style="font-size: 11px; font-weight: normal;">自动心跳周期探测</span>
         </div>
@@ -559,9 +562,12 @@
       </div>
 
       <div style="display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap;">
-        <button class="btn btn-secondary" onclick="manualPromote()" style="font-size: 12px; padding: 6px 14px;">👑 手动晋升为 Master (激活任务)</button>
-        <button class="btn btn-secondary" onclick="manualDemote()" style="font-size: 12px; padding: 6px 14px;">⏸ 手动降级为 Standby (让出权限)</button>
-        <button class="btn btn-secondary" onclick="manualPullState()" style="font-size: 12px; padding: 6px 14px;">🔄 从集群拉取最新凭证</button>
+        <button class="btn btn-secondary" onclick="manualPromote()" style="font-size: 12px; padding: 6px 14px;">👑 手动晋升为
+          Master (激活任务)</button>
+        <button class="btn btn-secondary" onclick="manualDemote()" style="font-size: 12px; padding: 6px 14px;">⏸ 手动降级为
+          Standby (让出权限)</button>
+        <button class="btn btn-secondary" onclick="manualPullState()" style="font-size: 12px; padding: 6px 14px;">🔄
+          从集群拉取最新凭证</button>
       </div>
       <div id="clusterFeedback" class="feedback-msg"></div>
     </div>
@@ -611,7 +617,7 @@
   <!-- data-cfasync="false" 阻止 Cloudflare Rocket Loader 篡改此脚本执行时序 -->
   <script data-cfasync="false">
     const PREFIX = '{{ROUTE_PREFIX}}';
-    
+
     // 自动读取密钥，并立即从浏览器地址栏抹除 ?api_key= 参数，防止截屏或历史记录泄密
     let urlParamKey = new URLSearchParams(window.location.search).get('api_key');
     let apiKey = urlParamKey || localStorage.getItem('clawbot_api_key') || '';
@@ -621,7 +627,7 @@
         const cleanUrl = new URL(window.location.href);
         cleanUrl.searchParams.delete('api_key');
         window.history.replaceState({}, document.title, cleanUrl.pathname + (cleanUrl.search ? cleanUrl.search : '') + cleanUrl.hash);
-      } catch (_) {}
+      } catch (_) { }
     }
 
     let pollTimer = null;
@@ -729,10 +735,17 @@
                 statusBadge = '<span style="color:#f87171; font-size:11px;">× 离线/失联</span>';
               }
 
+              let syncBadge = '';
+              if (p.lastSyncStatus === 'success') {
+                syncBadge = '<span style="color:#10b981; font-size:11px; background:rgba(16,185,129,0.1); border:1px solid rgba(16,185,129,0.25); padding:2px 6px; border-radius:4px;" title="最新凭证已成功推送到此节点">✓ 同步正常</span>';
+              } else if (p.lastSyncStatus === 'failed') {
+                syncBadge = '<span style="color:#ef4444; font-size:11px; background:rgba(239,68,68,0.1); border:1px solid rgba(239,68,68,0.25); padding:2px 6px; border-radius:4px;" title="' + (p.lastSyncError || '推送失败') + '">× 推送异常</span>';
+              }
+
               return '<div style="background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.06); padding:8px 12px; border-radius:6px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px;">' +
                 '<div style="font-size:12px; font-family:monospace; word-break:break-all;">' + p.url + ' <span style="color:var(--text-muted); font-size:11px;">[权重: ' + (p.priority || 50) + ']</span></div>' +
-                '<div style="display:flex; align-items:center; gap:8px;">' + statusBadge + '</div>' +
-              '</div>';
+                '<div style="display:flex; align-items:center; gap:8px;">' + syncBadge + statusBadge + '</div>' +
+                '</div>';
             }).join('');
           }
         }
@@ -1151,7 +1164,9 @@
         if (data.success && data.state) {
           const hasBot = Boolean(data.state.botToken);
           const hasCtx = Boolean(data.state.contextToken);
-          alert('✓ 成功从集群拉取并安全合并最新状态！\n\n• 微信账号绑定: ' + (hasBot ? '已绑定' : '未绑定') + '\n• 会话凭证: ' + (hasCtx ? '有效' : '未激活'));
+          const used = Number(data.state.contextTokenUsedCount || 0);
+          const remaining = Math.max(0, 10 - used);
+          alert('✓ 成功从集群对端安全合并最新状态！\n\n• 微信账号: ' + (hasBot ? '已绑定' : '未绑定') + '\n• 会话凭证: ' + (hasCtx ? '有效' : '未激活') + '\n• 剩余可用配额: ' + remaining + ' 条 (已用 ' + used + ' 条)\n\n提示：若本节点为主机，最新权威数据已反向同步给全网从节点。');
           checkState();
         } else {
           alert('拉取集群状态未返回有效数据: ' + (data.error || '未知错误'));
@@ -1166,8 +1181,8 @@
       localStorage.setItem('clawbot_api_key', apiKey);
     }
     checkState();
-    // 状态定期轮询：1 分钟请求一次
-    setInterval(checkState, 60000);
+    // 状态定期轮询：2 分钟请求一次
+    setInterval(checkState, 120000);
   </script>
 </body>
 

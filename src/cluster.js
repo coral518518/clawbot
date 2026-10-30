@@ -2,12 +2,16 @@ import { config } from './config.js';
 import { storage } from './storage.js';
 
 /**
- * 安全合并对端状态，防止对端的空凭证覆盖本地有效凭证
- * 规则：
- * 1. 若 incoming 标记了 isExplicitLogout（用户主动在管理后台注销），允许合法清空本地凭证；
- * 2. 若 local 存在有效的 botToken，而 incoming.botToken 为空且未显式注销，坚决保留 local 的 botToken、botId、userId；
- * 3. 比较时间戳：若 incoming.updatedAt >= local.updatedAt，允许更新 contextToken、quota、cursor、webhook 等业务动态字段；
- * 4. 其它情况保留两者中更全面有价值的数据。
+ * 安全合并对端状态，防止对端的空凭证或陈旧数据覆盖本地有效凭证
+ * 核心原则：
+ * 1. 显式注销优先：若 incoming 标记了 isExplicitLogout（用户在管理后台主动解绑），允许合法清空本地凭证；
+ * 2. 账号凭据保护：若 local 有有效 botToken，而 incoming 为空且未显式注销，坚决保留 local 凭据；
+ * 3. 会话单调性与 CRDT 融合（彻底杜绝配额倒退）：
+ *    - 若两端持有【同一个】contextToken：配额已用次数 contextTokenUsedCount 严格取两者最大值 Math.max(...)，
+ *      绝不允许任何陈旧的从节点快照将已消耗配额倒退（如已用 2 条剩 8 条绝不可能被倒退回剩 9 条）；
+ *    - 若两端是【不同】的 contextToken：比对创建时间 contextTokenCreatedAt，采纳真正更新的会话及其实时计数；
+ * 4. 提醒与 Webhook 标记：一旦任一节点标记为已触发，合并后坚决保持已触发，杜绝重复骚扰；
+ * 5. 更新时间戳 updatedAt 自动推进为两者与当前时间的最大值，避免版本陈旧。
  */
 export function mergeAuthState(local, incoming) {
   if (!incoming || typeof incoming !== 'object') return local;
@@ -25,42 +29,89 @@ export function mergeAuthState(local, incoming) {
   const incomingTime = Number(incoming.updatedAt || incoming.lastActiveTime || 0);
   const localTime = Number(local.updatedAt || local.lastActiveTime || 0);
 
+  // 2. 账号凭据合并 (botToken, botId, userId)
   if (incomingHasToken) {
-    // 对端有有效 Token：比较时间戳，若对端更新或本地本无 Token，则采纳对端 Token 及相关字段
-    if (!localHasToken || incomingTime >= localTime) {
-      result.botToken = incoming.botToken;
-      result.botId = incoming.botId;
-      result.userId = incoming.userId;
-      result.userWechatId = incoming.userWechatId || incoming.userId;
+    if (!localHasToken || incoming.botToken !== local.botToken) {
+      // 扫码换绑了新 Bot 或本地原本无 Token：比对时间戳采纳最新
+      if (!localHasToken || incomingTime >= localTime) {
+        result.botToken = incoming.botToken;
+        result.botId = incoming.botId;
+        result.userId = incoming.userId;
+        result.userWechatId = incoming.userWechatId || incoming.userId;
+      }
     }
   } else if (localHasToken) {
     console.warn('[Cluster] 拦截到对端空凭证同步请求，本地有效微信凭证已受保护，拒绝抹除！');
   }
 
-  // 业务动态字段（ContextToken, 剩余配额, 游标, Webhook 状态等）按时间戳更新
-  if (incomingTime >= localTime) {
-    if (incoming.contextToken !== undefined && (incoming.contextToken || !local.contextToken)) {
+  // 3. 会话凭据与配额合并 (contextToken & contextTokenUsedCount)
+  const incomingHasCtx = Boolean(incoming.contextToken);
+  const localHasCtx = Boolean(local.contextToken);
+
+  if (incomingHasCtx && localHasCtx && incoming.contextToken === local.contextToken) {
+    // 【关键场景 A】：两端持有同一个会话 Token（常规运行发消息扣配额）
+    // 配额已用条数严格单调递增！谁用得多说明谁发了更多通知，绝对不能被旧快照倒退！
+    const localUsed = Number(local.contextTokenUsedCount || 0);
+    const incomingUsed = Number(incoming.contextTokenUsedCount || 0);
+    const maxUsed = Math.max(localUsed, incomingUsed);
+    result.contextTokenUsedCount = maxUsed;
+
+    // 保留正确的创建时间与到期时间
+    result.contextTokenCreatedAt = local.contextTokenCreatedAt || incoming.contextTokenCreatedAt;
+    result.contextTokenExpireAt = local.contextTokenExpireAt || incoming.contextTokenExpireAt;
+
+    // 活跃时间取较晚者
+    result.lastActiveTime = Math.max(Number(local.lastActiveTime || 0), Number(incoming.lastActiveTime || 0));
+
+    // 提醒与 Webhook 触发状态：只要任一方已触发过，合并后保持已触发
+    if (local.reminderSentToken === result.contextToken || incoming.reminderSentToken === result.contextToken) {
+      result.reminderSentToken = result.contextToken;
+      result.reminderSentAt = local.reminderSentAt || incoming.reminderSentAt || Date.now();
+    }
+    if (local.webhookTriggeredToken === result.contextToken || incoming.webhookTriggeredToken === result.contextToken) {
+      result.webhookTriggeredToken = result.contextToken;
+      result.webhookTriggeredAt = local.webhookTriggeredAt || incoming.webhookTriggeredAt || Date.now();
+      result.webhookLastStatus = local.webhookLastStatus || incoming.webhookLastStatus || 200;
+    }
+
+    // 游标取非空且较长者（通常代表收到了更多微信消息）
+    if (incoming.syncBuf && (!result.syncBuf || incomingTime >= localTime)) {
+      result.syncBuf = incoming.syncBuf;
+    }
+
+    // 失效原因更新
+    if (maxUsed >= config.maxQuota) {
+      result.invalidationReason = `本轮 ${config.maxQuota} 条推送配额已全部用完，状态已自动流转为 WAITING_CONTEXT，请在微信回复任意内容恢复`;
+    } else if (incomingTime >= localTime && incoming.invalidationReason !== undefined) {
+      result.invalidationReason = incoming.invalidationReason;
+    }
+  } else if (incomingHasCtx) {
+    // 【场景 B】：对端拥有不同（更新）的会话 Token，或者本地本来没有会话
+    const incomingCreatedAt = Number(incoming.contextTokenCreatedAt || incomingTime);
+    const localCreatedAt = Number(local.contextTokenCreatedAt || localTime);
+
+    if (!localHasCtx || incomingCreatedAt >= localCreatedAt) {
+      // 对端捕获到了用户更新的微信回复，全面采纳新会话！
       result.contextToken = incoming.contextToken;
-      result.contextTokenUsedCount = incoming.contextTokenUsedCount ?? result.contextTokenUsedCount;
-      result.contextTokenCreatedAt = incoming.contextTokenCreatedAt ?? result.contextTokenCreatedAt;
-      result.contextTokenExpireAt = incoming.contextTokenExpireAt ?? result.contextTokenExpireAt;
+      result.contextTokenUsedCount = Number(incoming.contextTokenUsedCount || 0);
+      result.contextTokenCreatedAt = incoming.contextTokenCreatedAt || Date.now();
+      result.contextTokenExpireAt = incoming.contextTokenExpireAt || (Date.now() + 24 * 3600 * 1000);
+      result.syncBuf = incoming.syncBuf || result.syncBuf;
+      result.lastActiveTime = incoming.lastActiveTime || Date.now();
+      result.reminderSentToken = incoming.reminderSentToken || null;
+      result.reminderSentAt = incoming.reminderSentAt || null;
+      result.webhookTriggeredToken = incoming.webhookTriggeredToken || null;
+      result.webhookTriggeredAt = incoming.webhookTriggeredAt || null;
+      result.webhookLastStatus = incoming.webhookLastStatus || null;
+      result.webhookLastError = incoming.webhookLastError || null;
+      result.invalidationReason = incoming.invalidationReason || null;
+    } else {
+      console.log('[Cluster] 本地持有的会话比对端传入的会话更新，保留本地会话凭据');
     }
-    if (incoming.syncBuf) result.syncBuf = incoming.syncBuf;
-    if (incoming.lastActiveTime) result.lastActiveTime = incoming.lastActiveTime;
-    if (incoming.invalidationReason !== undefined) {
-      if (incomingHasToken || !localHasToken) {
-        result.invalidationReason = incoming.invalidationReason;
-      }
-    }
-    if (incoming.reminderSentToken) result.reminderSentToken = incoming.reminderSentToken;
-    if (incoming.reminderSentAt) result.reminderSentAt = incoming.reminderSentAt;
-    if (incoming.webhookTriggeredToken) result.webhookTriggeredToken = incoming.webhookTriggeredToken;
-    if (incoming.webhookTriggeredAt) result.webhookTriggeredAt = incoming.webhookTriggeredAt;
-    if (incoming.webhookLastStatus !== undefined) result.webhookLastStatus = incoming.webhookLastStatus;
-    if (incoming.webhookLastError !== undefined) result.webhookLastError = incoming.webhookLastError;
-    result.updatedAt = Math.max(incomingTime, Date.now());
   }
 
+  // 推进数据版本更新时间戳，确保高于两者，防止再次比对时被陈旧判定
+  result.updatedAt = Math.max(localTime, incomingTime, Date.now());
   return result;
 }
 
@@ -232,6 +283,7 @@ export class ClusterManager {
    */
   async _syncToSinglePeer(url, state) {
     if (!url || !state) return false;
+    const current = this.peersStatus.get(url) || { url };
     try {
       const res = await fetch(`${url}${config.routePrefix}/api/cluster/sync`, {
         method: 'POST',
@@ -243,12 +295,35 @@ export class ClusterManager {
         signal: AbortSignal.timeout(6000)
       });
       if (res.ok) {
+        this.peersStatus.set(url, {
+          ...current,
+          lastSyncTime: Date.now(),
+          lastSyncStatus: 'success',
+          lastSyncError: null
+        });
         return true;
       }
-      console.warn(`[Cluster] 推送状态至对端 (${url}) 返回 HTTP ${res.status}`);
+      let errDetail = `HTTP ${res.status}`;
+      try {
+        const json = await res.json();
+        if (json.error || json.message) errDetail += ` (${json.error || json.message})`;
+      } catch {}
+      console.warn(`[Cluster] 推送状态至对端 (${url}) 返回失败: ${errDetail}`);
+      this.peersStatus.set(url, {
+        ...current,
+        lastSyncTime: Date.now(),
+        lastSyncStatus: 'failed',
+        lastSyncError: errDetail
+      });
       return false;
     } catch (err) {
       console.warn(`[Cluster] 推送状态至对端 (${url}) 失败: ${err.message}`);
+      this.peersStatus.set(url, {
+        ...current,
+        lastSyncTime: Date.now(),
+        lastSyncStatus: 'failed',
+        lastSyncError: err.message
+      });
       return false;
     }
   }
@@ -313,7 +388,14 @@ export class ClusterManager {
 
             storage.set(merged, false); // false: 避免反向循环广播
             this.iLink.state = merged;
-            console.log(`[Cluster] 已成功从节点 (${url}) 拉取并安全合并最新 auth_state.json`);
+            console.log(`[Cluster] 已成功从节点 (${url}) 拉取并安全合并最新 auth_state.json [配额已用: ${merged.contextTokenUsedCount || 0}]`);
+
+            // 若本节点当前是 Master，拉取并合并后顺手将全网最新权威状态反向广播给所有从节点，纠正从节点陈旧数据
+            if (this.role === 'master' && this.peerUrls.length > 0) {
+              console.log('[Cluster] Master 节点已完成权威状态合并，正在反向广播修正全网从节点数据...');
+              this.syncToPeers(this.iLink.state).catch(() => {});
+            }
+
             return true;
           }
         } else {
@@ -556,7 +638,10 @@ export class ClusterManager {
       lastSeen: p.lastSeen,
       isAsleep: p.isAsleep,
       failureCount: p.failureCount,
-      error: p.error
+      error: p.error,
+      lastSyncTime: p.lastSyncTime || null,
+      lastSyncStatus: p.lastSyncStatus || null,
+      lastSyncError: p.lastSyncError || null
     }));
 
     const primaryPeer = peersArray[0] || null;

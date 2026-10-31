@@ -498,6 +498,54 @@
         </div>
       </div>
 
+      <!-- 凭据每日冷备与紧急导入还原卡片 (防灾兜底) -->
+      <div class="quota-container"
+        style="background: rgba(14, 23, 42, 0.7); border-left: 3px solid #10b981; margin-bottom: 16px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+          <span style="font-size: 13px; font-weight: 600; color: #6ee7b7;">💾 凭据每日冷备与紧急还原 (防灾兜底)</span>
+          <span id="valBackupBadge"
+            style="font-size: 11px; padding: 2px 8px; border-radius: 999px; background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.3);">未激活</span>
+        </div>
+        <div style="font-size: 12px; color: #cbd5e1; line-height: 1.6;">
+          <div><strong>冷备目标 URL：</strong><code id="valBackupUrl"
+              style="background: rgba(0,0,0,0.3); padding: 2px 6px; border-radius: 4px; color: #a7f3d0;">https://d1.coral001.de5.net/redis/set/sss</code>
+          </div>
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 4px;">
+            <div><strong>上次冷备时间：</strong><span id="valLastBackupTime" style="font-family: monospace;">-</span></div>
+            <div><strong>冷备状态：</strong><span id="valLastBackupStatus" style="font-family: monospace;">-</span></div>
+          </div>
+          <div style="font-size: 11px; color: var(--text-muted); margin-top: 4px;">
+            📌 <strong>机制：</strong>主节点每 24 小时自动将完整微信鉴权票据 JSON 推送备份至该安全接口。若全集群灾难性丢失，可一键导入还原，免除重新扫码。
+          </div>
+        </div>
+        <!-- 操作栏 -->
+        <div
+          style="margin-top: 10px; padding-top: 8px; border-top: 1px dashed rgba(255, 255, 255, 0.08); display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+          <button class="btn btn-secondary" onclick="triggerManualBackup(event)"
+            style="padding: 6px 12px; font-size: 12px; white-space: nowrap; background: rgba(16, 185, 129, 0.2); color: #6ee7b7; border: 1px solid rgba(16, 185, 129, 0.4);">💾
+            立即执行远端冷备</button>
+          <button class="btn btn-secondary" onclick="toggleRestorePanel()"
+            style="padding: 6px 12px; font-size: 12px; white-space: nowrap; background: rgba(59, 130, 246, 0.2); color: #93c5fd; border: 1px solid rgba(59, 130, 246, 0.4);">📥
+            紧急导入还原票据</button>
+        </div>
+
+        <!-- 折叠导入票据面板 -->
+        <div id="restorePanel"
+          style="display: none; margin-top: 12px; padding: 12px; background: rgba(0, 0, 0, 0.4); border-radius: 8px; border: 1px solid rgba(255, 255, 255, 0.1);">
+          <div style="font-size: 12px; font-weight: 600; color: #93c5fd; margin-bottom: 6px;">
+            📥 从远端备份粘贴 JSON 票据并导入全网：
+          </div>
+          <textarea id="restoreJsonInput" rows="5" placeholder='{"botToken":"...","botId":"...","userId":"...","contextToken":"..."}'
+            style="width: 100%; box-sizing: border-box; background: rgba(15, 23, 42, 0.8); border: 1px solid rgba(255, 255, 255, 0.2); color: #f8fafc; font-family: monospace; font-size: 11px; padding: 8px; border-radius: 6px; resize: vertical;"></textarea>
+          <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px;">
+            <button class="btn btn-secondary" onclick="toggleRestorePanel()"
+              style="padding: 5px 12px; font-size: 12px;">取消</button>
+            <button class="btn btn-primary" onclick="submitRestoreAuth(event)"
+              style="padding: 5px 14px; font-size: 12px; background: #3b82f6; border-color: #3b82f6;">确认导入并全网激活</button>
+          </div>
+        </div>
+      </div>
+
       <!-- 二维码显示区 -->
       <div id="qrSection" style="display: none;">
         <div class="qrcode-wrapper">
@@ -830,6 +878,41 @@
               wBadge.style.color = '#9ca3af';
               wBadge.style.borderColor = 'rgba(156, 163, 175, 0.3)';
               resBox.style.display = 'none';
+            }
+          }
+
+          // 渲染每日远端冷备状态
+          if (r.dailyBackup) {
+            const b = r.dailyBackup;
+            if (b.url) document.getElementById('valBackupUrl').innerText = b.url;
+            document.getElementById('valLastBackupTime').innerText = b.lastBackupAtBeijing || '尚无冷备记录';
+            const bBadge = document.getElementById('valBackupBadge');
+            const bStatus = document.getElementById('valLastBackupStatus');
+
+            if (b.lastError) {
+              bBadge.innerText = '冷备异常';
+              bBadge.style.background = 'rgba(239, 68, 68, 0.2)';
+              bBadge.style.color = '#f87171';
+              bBadge.style.borderColor = 'rgba(239, 68, 68, 0.3)';
+              bStatus.innerText = '异常 (' + b.lastError + ')';
+            } else if (b.lastBackupAt) {
+              bBadge.innerText = '正常守护 (每24h)';
+              bBadge.style.background = 'rgba(16, 185, 129, 0.2)';
+              bBadge.style.color = '#34d399';
+              bBadge.style.borderColor = 'rgba(16, 185, 129, 0.3)';
+              bStatus.innerText = '成功 (HTTP ' + (b.lastStatus || 200) + ')';
+            } else if (data.status === 'READY') {
+              bBadge.innerText = '待首次备份';
+              bBadge.style.background = 'rgba(59, 130, 246, 0.2)';
+              bBadge.style.color = '#60a5fa';
+              bBadge.style.borderColor = 'rgba(59, 130, 246, 0.3)';
+              bStatus.innerText = '等待轮询触发';
+            } else {
+              bBadge.innerText = '未激活';
+              bBadge.style.background = 'rgba(156, 163, 175, 0.2)';
+              bBadge.style.color = '#9ca3af';
+              bBadge.style.borderColor = 'rgba(156, 163, 175, 0.3)';
+              bStatus.innerText = '-';
             }
           }
         }
@@ -1173,6 +1256,84 @@
         }
       } catch (err) {
         alert('拉取失败: ' + err.message);
+      }
+    }
+
+    async function triggerManualBackup(evt) {
+      const btn = evt ? evt.target : null;
+      const oldText = btn ? btn.innerText : '';
+      if (btn) {
+        btn.disabled = true;
+        btn.innerText = '正在备份...';
+      }
+      try {
+        const res = await fetch(PREFIX + '/admin/trigger-daily-backup', {
+          method: 'POST',
+          headers: { 'X-API-Key': apiKey }
+        });
+        const data = await res.json();
+        if (data.success) {
+          alert('✓ ' + (data.message || '冷备已成功推送至远端！'));
+          checkState();
+        } else {
+          alert('远端冷备失败: ' + (data.error || '未知错误'));
+        }
+      } catch (err) {
+        alert('请求异常: ' + err.message);
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.innerText = oldText;
+        }
+      }
+    }
+
+    function toggleRestorePanel() {
+      const p = document.getElementById('restorePanel');
+      p.style.display = p.style.display === 'none' ? 'block' : 'none';
+    }
+
+    async function submitRestoreAuth(evt) {
+      const raw = document.getElementById('restoreJsonInput').value.trim();
+      if (!raw) {
+        alert('请先粘贴完整的 JSON 票据内容！');
+        return;
+      }
+      let parsed;
+      try {
+        parsed = JSON.parse(raw);
+      } catch (e) {
+        alert('JSON 格式错误，请检查粘贴的内容是否合法：\n' + e.message);
+        return;
+      }
+
+      if (!confirm('确定将此票据导入为主控凭据并立即同步至全集群吗？')) return;
+
+      const btn = evt ? evt.target : null;
+      if (btn) btn.disabled = true;
+
+      try {
+        const res = await fetch(PREFIX + '/api/restore-auth', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-API-Key': apiKey
+          },
+          body: JSON.stringify(parsed)
+        });
+        const data = await res.json();
+        if (data.success) {
+          alert('★★★ 导入还原成功！★★★\n\n' + (data.message || '凭据已生效并同步至全网备机。') + '\n当前剩余可用配额: ' + (data.state?.remainingQuota ?? '未知') + ' 条');
+          toggleRestorePanel();
+          document.getElementById('restoreJsonInput').value = '';
+          checkState();
+        } else {
+          alert('导入还原失败: ' + (data.error || '未知错误'));
+        }
+      } catch (err) {
+        alert('请求异常: ' + err.message);
+      } finally {
+        if (btn) btn.disabled = false;
       }
     }
 

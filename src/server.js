@@ -256,6 +256,72 @@ router.post('/admin/test-trigger-webhook', requireApiKey, async (req, res) => {
   }
 });
 
+// 手动测试触发每日鉴权凭据冷备份至远端接口
+router.post('/admin/trigger-daily-backup', requireApiKey, async (req, res) => {
+  try {
+    const result = await reminderService.checkAndTriggerDailyBackup(true);
+    res.json({
+      success: true,
+      message: `每日鉴权凭据已成功冷备份至远端！[HTTP ${result.status}]`,
+      result
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 隐蔽接口：上传并还原鉴权票据 (从远端备份导入，恢复后全网自动广播同步并激活长轮询)
+router.post('/api/restore-auth', requireApiKey, async (req, res) => {
+  try {
+    let incoming = req.body?.state || req.body?.data || req.body;
+    if (typeof incoming === 'string') {
+      try { incoming = JSON.parse(incoming); } catch {}
+    }
+
+    if (!incoming || typeof incoming !== 'object' || !incoming.botToken || typeof incoming.botToken !== 'string' || incoming.botToken.trim().length < 10) {
+      return res.status(400).json({
+        success: false,
+        error: '无效的票据数据：请求体必须为合法 JSON 且必须包含有效的 botToken'
+      });
+    }
+
+    // 格式化与时间戳推进
+    incoming.updatedAt = Date.now();
+    delete incoming.isExplicitLogout;
+
+    // 持久化存储并触发本地更新与广播
+    storage.set(incoming, true);
+    iLink.state = incoming;
+
+    console.log(`[Restore] ★★★ 鉴权票据已成功导入还原！BotId: ${incoming.botId}, UserId: ${incoming.userId} ★★★`);
+
+    // 若当前为主机角色且未开启长轮询，自动激活长轮询回路
+    if (clusterManager.role === 'master' && !iLink.pollingActive) {
+      console.log('[Restore] 当前节点为 Master，正在拉起微信消息长轮询...');
+      iLink.startLongPolling();
+    }
+
+    // 立即向集群中所有对端备机并发推送，全集群恢复一致
+    if (clusterManager.peerUrls.length > 0) {
+      clusterManager.syncToPeers(incoming).catch(() => {});
+    }
+
+    res.json({
+      success: true,
+      message: '鉴权票据已成功导入还原并同步至全集群！',
+      state: {
+        botId: incoming.botId,
+        userId: incoming.userId,
+        hasContextToken: Boolean(incoming.contextToken),
+        remainingQuota: iLink.remainingQuota,
+        updatedAt: incoming.updatedAt
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // 动态更新 Webhook 触发配置 (URL 与秘钥)
 router.post('/admin/update-trigger-config', requireApiKey, (req, res) => {
   try {

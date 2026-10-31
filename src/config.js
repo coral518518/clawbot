@@ -93,6 +93,8 @@ export const config = {
   // 到期前半小时 Webhook 任务触发配置
   triggerWebhookUrl: process.env.TRIGGER_WEBHOOK_URL || 'http://job.coral.cc.cd/api/trigger/tasks/6',
   triggerAuthKey: process.env.TRIGGER_AUTH_KEY || '',
+  // 每日远端冷备接口（主节点每日将最新凭证备份至此，以防全集群被清空）
+  dailyBackupUrl: process.env.DAILY_BACKUP_URL || 'https://d1.coral001.de5.net/redis/set/sss',
   // 多机高可用集群配置 (如 Netrun.io <-> Miget <-> Blitz Cloud 跨云热备)
   peerUrls: parsedPeerUrls,
   peerUrl: parsedPeerUrls[0] || '', // 向后兼容旧代码引用

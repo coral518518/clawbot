@@ -126,6 +126,9 @@ export class ClusterManager {
   constructor(iLink, reminderService) {
     this.iLink = iLink;
     this.reminderService = reminderService;
+    if (this.reminderService) {
+      this.reminderService.clusterManager = this;
+    }
     this.peerUrls = Array.isArray(config.peerUrls) ? config.peerUrls : [];
     this.peerUrl = this.peerUrls[0] || ''; // 向后兼容旧接口与单节点引用
     this.nodePriority = config.nodePriority;
@@ -662,7 +665,7 @@ export class ClusterManager {
       lastSyncSuccess: this.lastSyncSuccess,
       lastRoleChangeAt: this.lastRoleChangeAt,
       isPollingActive: this.iLink.pollingActive,
-      isReminderActive: Boolean(this.reminderService.intervalTimer)
+      isReminderActive: Boolean(this.reminderService?.timer)
     };
   }
 

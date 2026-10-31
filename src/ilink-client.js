@@ -98,6 +98,27 @@ function findFromUserId(obj) {
   return null;
 }
 
+// 递归提取用户上行消息中的文本内容
+function findTextMessage(obj) {
+  if (!obj || typeof obj !== 'object') return '';
+  if (Array.isArray(obj.item_list)) {
+    for (const item of obj.item_list) {
+      if (item.text_item && item.text_item.text) return String(item.text_item.text).trim();
+      if (item.text) return String(item.text).trim();
+    }
+  }
+  if (obj.text_item && obj.text_item.text) return String(obj.text_item.text).trim();
+  if (obj.text && typeof obj.text === 'string') return obj.text.trim();
+  if (obj.content && typeof obj.content === 'string') return obj.content.trim();
+  for (const k of Object.keys(obj)) {
+    if (typeof obj[k] === 'object') {
+      const found = findTextMessage(obj[k]);
+      if (found) return found;
+    }
+  }
+  return '';
+}
+
 // 腾讯 iLink 接口异常状态判断（只有显式返回非 0 错误码时才算错误）
 function isIlinkError(data) {
   if (!data || typeof data !== 'object') return false;
@@ -365,6 +386,11 @@ export class ILinkClient {
         }
 
         const token = findContextToken(msg);
+        const userText = findTextMessage(msg);
+        if (userText) {
+          console.log(`[iLink] 收到微信用户消息内容: "${userText}"`);
+        }
+
         if (token) {
           // 捕获用户在微信端的主动回复 -> 满血重置 10 条配额与 24 小时倒计时！
           this.state.contextToken = token;
@@ -387,6 +413,28 @@ export class ILinkClient {
           this.state.userId = sender;
           this.state.userWechatId = sender;
           hasUpdated = true;
+        }
+
+        // 功能 1：用户在微信回复固定内容“回复我”，网关自动回发一条在线确认微信消息，确认服务正常
+        const normalizedCmd = (userText || '').replace(/[，,。!！\s]/g, '');
+        const isProbeCmd = normalizedCmd === '回复我' || normalizedCmd.toLowerCase() === 'replyme';
+        const nowTime = Date.now();
+        if (isProbeCmd && this.state.contextToken) {
+          // 防重放与防抖：3秒内同一指令仅响应一次，杜绝轮询网络波动时的重复触发
+          if (!this._lastProbeReplyAt || (nowTime - this._lastProbeReplyAt > 3000)) {
+            this._lastProbeReplyAt = nowTime;
+            console.log('[iLink] 捕获到探活指令“回复我”，正在自动回送在线确认微信通知...');
+            setTimeout(() => {
+              const probeReply = '【服务在线响应】\n您的 ClawBot 微信纯通知网关正在正常运行中！\n已成功刷新 24 小时有效时限与推送配额。';
+              this._sendRawMessage(probeReply, '服务运行状态确认')
+                .then(() => {
+                  console.log(`[iLink] ★★★ 已成功自动回复“回复我”微信探活通知！当前剩余配额: ${this.remainingQuota} 条 ★★★`);
+                })
+                .catch(err => {
+                  console.warn('[iLink] 自动回复“回复我”通知失败:', err.message);
+                });
+            }, 350);
+          }
         }
       }
     }

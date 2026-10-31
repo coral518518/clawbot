@@ -178,31 +178,51 @@ export class ClusterManager {
     console.log(`[Cluster] 多节点集群模式启动！节点权重(Priority): ${this.nodePriority} | 初始预设角色: ${config.nodeRole}`);
     console.log(`[Cluster] 对端节点列表 (${this.peerUrls.length} 个):`, this.peerUrls.join(', '));
 
-    // 自适应角色决策
-    if (config.nodeRole === 'master') {
-      this.role = 'master';
-      this.startMasterTasks();
-    } else if (config.nodeRole === 'standby') {
+    // 1. 启动时主动并发探测所有对端节点状态
+    await this._probeAllPeers();
+
+    // 2. 无论本节点最终角色为何，启动时务必优先从存活对端（优先在线 Master）拉取最新权威 auth_state.json！
+    // 这样当主节点重启恢复时，能瞬间补齐停机期间备机接管时更新的最新凭证与已用配额计数
+    await this.pullStateFromPeers(null, false);
+
+    const onlinePeers = Array.from(this.peersStatus.values()).filter(p => p.online);
+    const activeMaster = onlinePeers.find(p => p.role === 'master');
+    const higherPriorityPeer = onlinePeers.find(p => (p.priority || 0) > this.nodePriority);
+
+    // 3. 自适应角色决策与抢占机制
+    if (config.nodeRole === 'standby') {
+      console.log('[Cluster] 环境变量显式配置为固定 Standby 备用角色');
       this.role = 'standby';
       this.stopMasterTasks();
-      await this.pullStateFromPeers(null, false);
+    } else if (config.nodeRole === 'master') {
+      console.log('[Cluster] 环境变量显式配置为固定 Master 主控角色');
+      this.role = 'master';
+      this.startMasterTasks();
+      this.syncToPeers(this.iLink.state).catch(() => {});
     } else {
-      // auto 模式：主动并发探测所有对端，决定本节点初始角色
-      await this._probeAllPeers();
-      const onlinePeers = Array.from(this.peersStatus.values()).filter(p => p.online);
-      const hasActiveMaster = onlinePeers.some(p => p.role === 'master');
-      const hasHigherPriority = onlinePeers.some(p => (p.priority || 0) > this.nodePriority);
-
-      if (hasActiveMaster || hasHigherPriority) {
-        console.log('[Cluster] 探测到集群已有 Master 或存在更高优先级的在线节点，当前节点自动设置为 Standby 备用');
+      // auto 动态自适应选举模式：
+      if (higherPriorityPeer) {
+        // 集群中存在权重严格高于本节点的存活节点 -> 本节点必须让位为 Standby
+        console.log(`[Cluster] 探测到更高优先级的在线节点 (${higherPriorityPeer.url}, Priority: ${higherPriorityPeer.priority} > ${this.nodePriority})，当前节点设为 Standby 备用`);
         this.role = 'standby';
         this.stopMasterTasks();
-        await this.pullStateFromPeers(null, false);
+      } else if (activeMaster && (activeMaster.priority || 0) > this.nodePriority) {
+        // 存在在线 Master 且对方权重高于本节点 -> 保持 Standby
+        console.log(`[Cluster] 探测到在线 Master (${activeMaster.url}, Priority: ${activeMaster.priority} > ${this.nodePriority})，当前节点设为 Standby 备用`);
+        this.role = 'standby';
+        this.stopMasterTasks();
       } else {
-        console.log('[Cluster] 未发现活跃的主节点且本节点权重最高，当前节点自动接管为 Master');
+        // 本节点权重高于或等于全网存活节点（例如主节点 Netrun 重启恢复，权重 100 高于当前临时 Master Miget 的 80）：
+        // 触发高权重节点抢占式晋升为 Master！
+        if (activeMaster) {
+          console.warn(`[Cluster] ⚡ 抢占接管：本节点已拉取最新凭据并启动，权重 (${this.nodePriority}) 高于当前临时主控 (${activeMaster.url}, Priority: ${activeMaster.priority})，主动升级为新 Master！`);
+        } else {
+          console.log(`[Cluster] 未发现活跃主节点，且本节点在存活节点中权重最高 [Priority: ${this.nodePriority}]，当前节点自动接管为 Master`);
+        }
         this.role = 'master';
-        await this.pullStateFromPeers(null, false);
         this.startMasterTasks();
+        // 立即向全网广播最新状态与主控身份，促使旧主控退位让贤
+        this.syncToPeers(this.iLink.state).catch(() => {});
       }
     }
 
@@ -240,15 +260,24 @@ export class ClusterManager {
   /**
    * 晋升为主节点 (Promote to Master)
    */
-  promoteToMaster(reason = '手动晋升') {
+  async promoteToMaster(reason = '手动晋升') {
     if (this.role === 'master') return;
     console.warn(`[Cluster] ⚡ 故障接管：备机晋升为 MASTER！原因: ${reason}`);
+
+    // 晋升前，务必先从存活对端拉取一次最新状态，防止接管前有更新未落盘
+    await this.pullStateFromPeers(null, false);
+
     // 重新加载本地最新 auth_state
     const latestState = storage.get();
     if (latestState) {
       this.iLink.state = latestState;
     }
     this.startMasterTasks();
+
+    // 晋升后主动向所有备机广播，确立权威地位并促使低权重对端让位
+    if (this.peerUrls.length > 0) {
+      this.syncToPeers(this.iLink.state).catch(() => {});
+    }
   }
 
   /**
@@ -292,7 +321,9 @@ export class ClusterManager {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-api-key': config.apiKey
+          'x-api-key': config.apiKey,
+          'x-cluster-sender-role': this.role,
+          'x-cluster-sender-priority': String(this.nodePriority)
         },
         body: JSON.stringify(state),
         signal: AbortSignal.timeout(6000)
@@ -427,7 +458,7 @@ export class ClusterManager {
   /**
    * 处理对端推送过来的最新状态
    */
-  handleIncomingSync(incomingState) {
+  handleIncomingSync(incomingState, senderRole = null, senderPriority = 0) {
     if (!incomingState || typeof incomingState !== 'object') return false;
     const local = storage.get() || this.iLink.state;
     const merged = mergeAuthState(local, incomingState);
@@ -435,6 +466,13 @@ export class ClusterManager {
     storage.set(merged, false); // false: 禁止二次广播，防止死循环
     this.iLink.state = merged;
     console.log('[Cluster] 已收到并安全合并对端同步的最新 auth_state.json');
+
+    // 核心让位协同：若本节点当前是 Master，但收到更高优先级的 Master 同步，本节点立即退位让贤为 Standby！
+    if (this.role === 'master' && senderRole === 'master' && Number(senderPriority) > this.nodePriority) {
+      console.warn(`[Cluster] ⚡ 收到更高优先级 Master [Priority: ${senderPriority} > ${this.nodePriority}] 的状态推送，本节点立即让位为 Standby！`);
+      this.demoteToStandby(`收到更高优先级主节点推送 (Priority: ${senderPriority})`);
+      return true;
+    }
 
     // 若本节点当前是 Master 且此前未启动轮询（如用户是在对端备机扫码绑定的），则自动激活长轮询
     if (this.role === 'master' && this.iLink.state.botToken && !this.iLink.pollingActive) {
@@ -573,14 +611,22 @@ export class ClusterManager {
     if (this.role === 'standby') {
       if (activeMasters.length > 0) {
         // 集群中已有健康的 Master 在正常工作
+        // 关键增强：检查运行中的 Master 权重是否低于本节点！
+        // 如果本节点权重（如 Netrun=100）高于当前 Master（如 Miget=80），说明高优先级节点已恢复，必须触发抢占恢复主节点！
+        const lowerPriorityMaster = activeMasters.find(m => (m.priority || 0) < this.nodePriority);
+        if (lowerPriorityMaster && config.nodeRole !== 'standby') {
+          console.warn(`[Cluster] ⚡ 发现当前运行中的 Master (${lowerPriorityMaster.url}, Priority: ${lowerPriorityMaster.priority}) 权重低于本节点 (${this.nodePriority})，触发高优先级节点抢占接管！`);
+          this.failureCount = 0;
+          await this.promoteToMaster(`本节点权重最高 [Priority: ${this.nodePriority} > ${lowerPriorityMaster.priority}]，抢占升级为 Master`);
+          return;
+        }
         this.failureCount = 0;
       } else {
         // 全集群未发现任何存活的 Master！
         this.failureCount++;
-        const maxRetries = 3;
+        const maxRetries = 2; // 2 次心跳周期（约 30 秒）无主，进入分级容灾选举
         console.warn(`[Cluster] 警告：全集群当前无活跃 Master [${this.failureCount}/${maxRetries}]`);
 
-        // 连续 3 次心跳周期（约 45 秒）无主，进入分级容灾选举
         if (this.failureCount >= maxRetries) {
           // 比较存活的备节点最高权重
           const highestPeerPriority = onlinePeers.length > 0
@@ -590,14 +636,14 @@ export class ClusterManager {
           if (this.nodePriority > highestPeerPriority) {
             // 本节点权重高于所有存活对端，当仁不让接管 Master！
             this.failureCount = 0;
-            this.promoteToMaster(`主节点故障，且本节点在存活节点中权重最高 [Priority: ${this.nodePriority} > ${highestPeerPriority}]`);
+            await this.promoteToMaster(`主节点故障，且本节点在存活节点中权重最高 [Priority: ${this.nodePriority} > ${highestPeerPriority}]`);
           } else if (this.nodePriority === highestPeerPriority) {
             // 权重极端相同：根据显式配置或字母序裁决，防止脑裂
             const myUrl = config.routePrefix;
             const peerUrlsSorted = onlinePeers.map(p => p.url).sort();
             if (peerUrlsSorted.length === 0 || myUrl < peerUrlsSorted[0]) {
               this.failureCount = 0;
-              this.promoteToMaster(`主节点故障且权重并列，决胜获胜晋升 Master`);
+              await this.promoteToMaster(`主节点故障且权重并列，决胜获胜晋升 Master`);
             }
           } else {
             // 存活节点中有更高权重的备机（例如 Netrun 挂了，Miget(80) 还在，Blitz(60) 看到 Miget 存活），本节点绝不争抢，保持静默！

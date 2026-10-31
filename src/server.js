@@ -344,7 +344,9 @@ router.post('/admin/update-trigger-config', requireApiKey, (req, res) => {
 // 备节点接收 Master 推送的最新状态并落盘
 router.post('/api/cluster/sync', requireApiKey, (req, res) => {
   const incoming = req.body;
-  const ok = clusterManager.handleIncomingSync(incoming);
+  const senderRole = req.headers['x-cluster-sender-role'] || req.body?.__clusterRole;
+  const senderPriority = parseInt(req.headers['x-cluster-sender-priority'] || req.body?.__clusterPriority || '0', 10);
+  const ok = clusterManager.handleIncomingSync(incoming, senderRole, senderPriority);
   if (ok) {
     res.json({ success: true, message: '状态已同步落盘', timestamp: Date.now() });
   } else {
@@ -389,14 +391,14 @@ router.get('/api/cluster/status', requireApiKey, (req, res) => {
 });
 
 // 手动切换角色：晋升为 Master
-router.post('/api/cluster/promote', requireApiKey, (req, res) => {
-  clusterManager.promoteToMaster('管理端手动调用 API 晋升');
+router.post('/api/cluster/promote', requireApiKey, async (req, res) => {
+  await clusterManager.promoteToMaster('管理端手动调用 API 晋升');
   res.json({ success: true, role: clusterManager.role, message: '已手动晋升为 Master' });
 });
 
 // 手动切换角色：降级为 Standby
-router.post('/api/cluster/demote', requireApiKey, (req, res) => {
-  clusterManager.demoteToStandby('管理端手动调用 API 降级');
+router.post('/api/cluster/demote', requireApiKey, async (req, res) => {
+  await clusterManager.demoteToStandby('管理端手动调用 API 降级');
   res.json({ success: true, role: clusterManager.role, message: '已手动降级为 Standby' });
 });
 

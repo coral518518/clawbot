@@ -535,7 +535,8 @@
           <div style="font-size: 12px; font-weight: 600; color: #93c5fd; margin-bottom: 6px;">
             📥 从远端备份粘贴 JSON 票据并导入全网：
           </div>
-          <textarea id="restoreJsonInput" rows="5" placeholder='{"botToken":"...","botId":"...","userId":"...","contextToken":"..."}'
+          <textarea id="restoreJsonInput" rows="5"
+            placeholder='{"botToken":"...","botId":"...","userId":"...","contextToken":"..."}'
             style="width: 100%; box-sizing: border-box; background: rgba(15, 23, 42, 0.8); border: 1px solid rgba(255, 255, 255, 0.2); color: #f8fafc; font-family: monospace; font-size: 11px; padding: 8px; border-radius: 6px; resize: vertical;"></textarea>
           <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px;">
             <button class="btn btn-secondary" onclick="toggleRestorePanel()"
@@ -570,10 +571,10 @@
       </div>
     </div>
 
-    <!-- 1.5 高可用多节点热备集群 (Netrun · Miget · Blitz) -->
+    <!-- 1.5 高可用多节点热备集群 -->
     <div class="card" id="clusterCard" style="display: none;">
       <h2>
-        <span>高可用热备集群 (Netrun · Miget · Blitz)</span>
+        <span>高可用热备集群</span>
         <span id="clusterStatusText"
           style="font-size: 13px; font-weight: normal; color: var(--text-muted);">跨云分级互备</span>
       </h2>

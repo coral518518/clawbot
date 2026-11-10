@@ -116,7 +116,7 @@ export function mergeAuthState(local, incoming) {
 }
 
 /**
- * ClusterManager: 跨云多节点高可用集群协调器 (Netrun.io <-> Miget <-> Blitz Cloud)
+ * ClusterManager: 跨云多节点高可用集群协调器 
  * 职责：
  * 1. 多节点主备竞选与防脑裂（基于优先级 NODE_PRIORITY 确定性选举），保证全集群永远只有 1 个实例运行长轮询与守护任务；
  * 2. 状态全自动实时广播同步（登录凭证、Token、配额、游标变化并发推送到所有对端）；
@@ -198,7 +198,7 @@ export class ClusterManager {
       console.log('[Cluster] 环境变量显式配置为固定 Master 主控角色');
       this.role = 'master';
       this.startMasterTasks();
-      this.syncToPeers(this.iLink.state).catch(() => {});
+      this.syncToPeers(this.iLink.state).catch(() => { });
     } else {
       // auto 动态自适应选举模式：
       if (higherPriorityPeer) {
@@ -212,7 +212,6 @@ export class ClusterManager {
         this.role = 'standby';
         this.stopMasterTasks();
       } else {
-        // 本节点权重高于或等于全网存活节点（例如主节点 Netrun 重启恢复，权重 100 高于当前临时 Master Miget 的 80）：
         // 触发高权重节点抢占式晋升为 Master！
         if (activeMaster) {
           console.warn(`[Cluster] ⚡ 抢占接管：本节点已拉取最新凭据并启动，权重 (${this.nodePriority}) 高于当前临时主控 (${activeMaster.url}, Priority: ${activeMaster.priority})，主动升级为新 Master！`);
@@ -222,7 +221,7 @@ export class ClusterManager {
         this.role = 'master';
         this.startMasterTasks();
         // 立即向全网广播最新状态与主控身份，促使旧主控退位让贤
-        this.syncToPeers(this.iLink.state).catch(() => {});
+        this.syncToPeers(this.iLink.state).catch(() => { });
       }
     }
 
@@ -276,7 +275,7 @@ export class ClusterManager {
 
     // 晋升后主动向所有备机广播，确立权威地位并促使低权重对端让位
     if (this.peerUrls.length > 0) {
-      this.syncToPeers(this.iLink.state).catch(() => {});
+      this.syncToPeers(this.iLink.state).catch(() => { });
     }
   }
 
@@ -291,7 +290,7 @@ export class ClusterManager {
     // 降级前，若本地有有效凭据，主动向所有对端推送最新状态，确保新主机拿到最新凭证
     const local = storage.get() || this.iLink.state;
     if (local && local.botToken) {
-      await this.syncToPeers(local).catch(() => {});
+      await this.syncToPeers(local).catch(() => { });
     }
     await this.pullStateFromPeers(null, false);
   }
@@ -341,7 +340,7 @@ export class ClusterManager {
       try {
         const json = await res.json();
         if (json.error || json.message) errDetail += ` (${json.error || json.message})`;
-      } catch {}
+      } catch { }
       console.warn(`[Cluster] 推送状态至对端 (${url}) 返回失败: ${errDetail}`);
       this.peersStatus.set(url, {
         ...current,
@@ -427,7 +426,7 @@ export class ClusterManager {
             // 若本节点当前是 Master，拉取并合并后顺手将全网最新权威状态反向广播给所有从节点，纠正从节点陈旧数据
             if (this.role === 'master' && this.peerUrls.length > 0) {
               console.log('[Cluster] Master 节点已完成权威状态合并，正在反向广播修正全网从节点数据...');
-              this.syncToPeers(this.iLink.state).catch(() => {});
+              this.syncToPeers(this.iLink.state).catch(() => { });
             }
 
             return true;
@@ -501,11 +500,11 @@ export class ClusterManager {
         return true;
       }
       return text.includes('This app is asleep') ||
-             text.includes('data-kind="asleep"') ||
-             text.includes('blitz-wake') ||
-             text.includes('Starting container') ||
-             text.includes('waking up') ||
-             text.includes('<!DOCTYPE html>');
+        text.includes('data-kind="asleep"') ||
+        text.includes('blitz-wake') ||
+        text.includes('Starting container') ||
+        text.includes('waking up') ||
+        text.includes('<!DOCTYPE html>');
     };
 
     try {
@@ -533,7 +532,7 @@ export class ClusterManager {
           };
         }
       }
-    } catch {}
+    } catch { }
 
     // Fallback 探测 /health
     try {
@@ -558,7 +557,7 @@ export class ClusterManager {
           };
         }
       }
-    } catch {}
+    } catch { }
 
     return { online: false, isAsleep: false, role: 'unknown', priority: 0 };
   }
@@ -612,7 +611,7 @@ export class ClusterManager {
       if (activeMasters.length > 0) {
         // 集群中已有健康的 Master 在正常工作
         // 关键增强：检查运行中的 Master 权重是否低于本节点！
-        // 如果本节点权重（如 Netrun=100）高于当前 Master（如 Miget=80），说明高优先级节点已恢复，必须触发抢占恢复主节点！
+        // 如果本节点权重（如 orkestr=100）高于当前 Master（如 Miget=80），说明高优先级节点已恢复，必须触发抢占恢复主节点！
         const lowerPriorityMaster = activeMasters.find(m => (m.priority || 0) < this.nodePriority);
         if (lowerPriorityMaster && config.nodeRole !== 'standby') {
           console.warn(`[Cluster] ⚡ 发现当前运行中的 Master (${lowerPriorityMaster.url}, Priority: ${lowerPriorityMaster.priority}) 权重低于本节点 (${this.nodePriority})，触发高优先级节点抢占接管！`);
@@ -646,7 +645,7 @@ export class ClusterManager {
               await this.promoteToMaster(`主节点故障且权重并列，决胜获胜晋升 Master`);
             }
           } else {
-            // 存活节点中有更高权重的备机（例如 Netrun 挂了，Miget(80) 还在，Blitz(60) 看到 Miget 存活），本节点绝不争抢，保持静默！
+            // 存活节点中有更高权重的备机（例如 orkestr 挂了，Miget(80) 还在，Blitz(60) 看到 Miget 存活），本节点绝不争抢，保持静默！
             console.log(`[Cluster] 检测到权重更高的在线备机 (Priority: ${highestPeerPriority} > ${this.nodePriority})，保持 Standby 静候其接管`);
             this.failureCount = 0;
           }
@@ -660,7 +659,7 @@ export class ClusterManager {
       const topMaster = activeMasters.reduce((prev, curr) => (curr.priority > prev.priority ? curr : prev), activeMasters[0]);
 
       if (topMaster.priority > this.nodePriority) {
-        // 对方权重高于本节点（例如高优先级的 Netrun 恢复上线）：主动谦让降级为 Standby！
+        // 对方权重高于本节点（例如高优先级的 orkestr 恢复上线）：主动谦让降级为 Standby！
         console.warn(`[Cluster] ⚡ 发现更高优先级的主节点 (${topMaster.url}, Priority: ${topMaster.priority} > ${this.nodePriority}) 已恢复，本节点主动让出 Master 权限`);
         await this.demoteToStandby(`高优先级主节点恢复 (${topMaster.url})`);
       } else if (topMaster.priority === this.nodePriority) {

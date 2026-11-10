@@ -116,6 +116,18 @@ export function mergeAuthState(local, incoming) {
 }
 
 /**
+ * 规范化对端请求路径，避免配置 PEER_URLS 时末尾自带 /coral 导致出现 /coral/coral 重复前缀
+ */
+function buildPeerEndpoint(baseUrl, pathWithPrefix) {
+  let base = (baseUrl || '').trim().replace(/\/+$/, '');
+  const prefix = config.routePrefix;
+  if (prefix && prefix !== '/' && base.endsWith(prefix)) {
+    base = base.slice(0, -prefix.length).replace(/\/+$/, '');
+  }
+  return `${base}${pathWithPrefix}`;
+}
+
+/**
  * ClusterManager: 跨云多节点高可用集群协调器 
  * 职责：
  * 1. 多节点主备竞选与防脑裂（基于优先级 NODE_PRIORITY 确定性选举），保证全集群永远只有 1 个实例运行长轮询与守护任务；
@@ -132,7 +144,8 @@ export class ClusterManager {
     this.peerUrls = Array.isArray(config.peerUrls) ? config.peerUrls : [];
     this.peerUrl = this.peerUrls[0] || ''; // 向后兼容旧接口与单节点引用
     this.nodePriority = config.nodePriority;
-    this.role = config.nodeRole === 'standby' ? 'standby' : 'master'; // 初始角色
+    // auto 模式初始以 standby 启动，完成选举判定后再晋升，杜绝启动期误以为 Master 产生抢跑广播
+    this.role = config.nodeRole === 'master' ? 'master' : 'standby';
 
     // 多对端节点运行时状态映射表: url => { url, online, role, priority, lastSeen, isAsleep, failureCount, error }
     this.peersStatus = new Map();
@@ -161,17 +174,11 @@ export class ClusterManager {
    * 初始化多节点集群
    */
   async init() {
-    // 监听本地存储变更，无论本节点是 Master 还是 Standby，只要有本地发起的有效变更均并发推送到所有对端
-    this.unsubscribeStorage = storage.subscribe((state) => {
-      if (this.peerUrls.length > 0 && state) {
-        this.syncToPeers(state);
-      }
-    });
-
     if (this.peerUrls.length === 0) {
       console.log('[Cluster] 未配置 PEER_URLS / PEER_URL，当前服务以独立单机模式运行 (Role: Master)');
       this.role = 'master';
       this.startMasterTasks();
+      this._registerStorageListener();
       return;
     }
 
@@ -225,8 +232,23 @@ export class ClusterManager {
       }
     }
 
-    // 启动多节点心跳与故障转移检测回路
+    // 4. 角色与权威凭证完全确定后，再安全挂载存储监听，避免启动期并发竞争广播
+    this._registerStorageListener();
+
+    // 5. 启动多节点心跳与故障转移检测回路
     this.startHeartbeatLoop();
+  }
+
+  /**
+   * 注册本地持久化存储变更监听器（状态更新并发推送至对端）
+   */
+  _registerStorageListener() {
+    if (this.unsubscribeStorage) return;
+    this.unsubscribeStorage = storage.subscribe((state) => {
+      if (this.peerUrls.length > 0 && state) {
+        this.syncToPeers(state);
+      }
+    });
   }
 
   /**
@@ -315,50 +337,64 @@ export class ClusterManager {
   async _syncToSinglePeer(url, state) {
     if (!url || !state) return false;
     const current = this.peersStatus.get(url) || { url };
-    try {
-      const res = await fetch(`${url}${config.routePrefix}/api/cluster/sync`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': config.apiKey,
-          'x-cluster-sender-role': this.role,
-          'x-cluster-sender-priority': String(this.nodePriority)
-        },
-        body: JSON.stringify(state),
-        signal: AbortSignal.timeout(6000)
-      });
-      if (res.ok) {
-        this.peersStatus.set(url, {
-          ...current,
-          lastSyncTime: Date.now(),
-          lastSyncStatus: 'success',
-          lastSyncError: null
-        });
-        return true;
-      }
-      let errDetail = `HTTP ${res.status}`;
+    const syncUrl = buildPeerEndpoint(url, `${config.routePrefix}/api/cluster/sync`);
+
+    // 带 1 次快速重试（等待 1s），平滑吸收对端网络毛刺或反向代理连接瞬断
+    for (let attempt = 1; attempt <= 2; attempt++) {
       try {
-        const json = await res.json();
-        if (json.error || json.message) errDetail += ` (${json.error || json.message})`;
-      } catch { }
-      console.warn(`[Cluster] 推送状态至对端 (${url}) 返回失败: ${errDetail}`);
-      this.peersStatus.set(url, {
-        ...current,
-        lastSyncTime: Date.now(),
-        lastSyncStatus: 'failed',
-        lastSyncError: errDetail
-      });
-      return false;
-    } catch (err) {
-      console.warn(`[Cluster] 推送状态至对端 (${url}) 失败: ${err.message}`);
-      this.peersStatus.set(url, {
-        ...current,
-        lastSyncTime: Date.now(),
-        lastSyncStatus: 'failed',
-        lastSyncError: err.message
-      });
-      return false;
+        const res = await fetch(syncUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': config.apiKey,
+            'x-cluster-sender-role': this.role,
+            'x-cluster-sender-priority': String(this.nodePriority)
+          },
+          body: JSON.stringify(state),
+          signal: AbortSignal.timeout(6000)
+        });
+        if (res.ok) {
+          this.peersStatus.set(url, {
+            ...current,
+            lastSyncTime: Date.now(),
+            lastSyncStatus: 'success',
+            lastSyncError: null
+          });
+          return true;
+        }
+        let errDetail = `HTTP ${res.status}`;
+        try {
+          const json = await res.json();
+          if (json.error || json.message) errDetail += ` (${json.error || json.message})`;
+        } catch { }
+
+        // 401 密钥不匹配无重试必要；若第 2 次尝试依然失败，则记录告警
+        if (res.status === 401 || attempt === 2) {
+          console.warn(`[Cluster] 推送状态至对端 (${url}) 返回失败: ${errDetail}`);
+          this.peersStatus.set(url, {
+            ...current,
+            lastSyncTime: Date.now(),
+            lastSyncStatus: 'failed',
+            lastSyncError: errDetail
+          });
+          return false;
+        }
+        await new Promise(r => setTimeout(r, 1000));
+      } catch (err) {
+        if (attempt === 2) {
+          console.warn(`[Cluster] 推送状态至对端 (${url}) 失败: ${err.message}`);
+          this.peersStatus.set(url, {
+            ...current,
+            lastSyncTime: Date.now(),
+            lastSyncStatus: 'failed',
+            lastSyncError: err.message
+          });
+          return false;
+        }
+        await new Promise(r => setTimeout(r, 1000));
+      }
     }
+    return false;
   }
 
   // 兼容旧的单个参数调用
@@ -407,7 +443,8 @@ export class ClusterManager {
     let lastError = null;
     for (const url of candidates) {
       try {
-        const res = await fetch(`${url}${config.routePrefix}/api/cluster/state`, {
+        const stateUrl = buildPeerEndpoint(url, `${config.routePrefix}/api/cluster/state`);
+        const res = await fetch(stateUrl, {
           headers: { 'x-api-key': config.apiKey },
           signal: AbortSignal.timeout(6000)
         });
@@ -494,21 +531,27 @@ export class ClusterManager {
    */
   async _probeSinglePeer(url) {
     const isAsleepResponse = (text, contentType, status) => {
-      if (status === 502 || status === 503 || status === 504) return true;
-      if (!text || typeof text !== 'string') return false;
-      if (contentType && contentType.toLowerCase().includes('text/html')) {
+      if (!text || typeof text !== 'string') {
+        return status === 502 || status === 503 || status === 504;
+      }
+      const lower = text.toLowerCase();
+      const hasSleepKeyword = lower.includes('this app is asleep') ||
+        lower.includes('data-kind="asleep"') ||
+        lower.includes('blitz-wake') ||
+        lower.includes('starting container') ||
+        lower.includes('waking up');
+      if (hasSleepKeyword) return true;
+      // 仅当状态码为 502/503/504 且包含 html 时才辅助判定为休眠/冷启动中
+      if ((status === 502 || status === 503 || status === 504) && contentType && contentType.toLowerCase().includes('text/html')) {
         return true;
       }
-      return text.includes('This app is asleep') ||
-        text.includes('data-kind="asleep"') ||
-        text.includes('blitz-wake') ||
-        text.includes('Starting container') ||
-        text.includes('waking up') ||
-        text.includes('<!DOCTYPE html>');
+      return false;
     };
 
+    let probeStatusAsleep = false;
     try {
-      const res = await fetch(`${url}${config.routePrefix}/api/cluster/status`, {
+      const statusUrl = buildPeerEndpoint(url, `${config.routePrefix}/api/cluster/status`);
+      const res = await fetch(statusUrl, {
         headers: { 'x-api-key': config.apiKey },
         signal: AbortSignal.timeout(4500)
       });
@@ -516,10 +559,8 @@ export class ClusterManager {
       const text = await res.text();
 
       if (isAsleepResponse(text, contentType, res.status)) {
-        return { online: false, isAsleep: true, role: 'unknown', priority: 0, reason: '对端实例处于休眠状态' };
-      }
-
-      if (res.ok && contentType.includes('application/json')) {
+        probeStatusAsleep = true;
+      } else if (res.ok && contentType.includes('application/json')) {
         const data = JSON.parse(text);
         if (data && typeof data === 'object' && data.success) {
           return {
@@ -534,15 +575,12 @@ export class ClusterManager {
       }
     } catch { }
 
-    // Fallback 探测 /health
+    // Fallback 探测 /health (无鉴权且无需前缀，最稳健)
     try {
-      const fallbackRes = await fetch(`${url}/health`, { signal: AbortSignal.timeout(4500) });
+      const healthUrl = buildPeerEndpoint(url, '/health');
+      const fallbackRes = await fetch(healthUrl, { signal: AbortSignal.timeout(4500) });
       const fallbackContentType = fallbackRes.headers.get('content-type') || '';
       const fallbackText = await fallbackRes.text();
-
-      if (isAsleepResponse(fallbackText, fallbackContentType, fallbackRes.status)) {
-        return { online: false, isAsleep: true, role: 'unknown', priority: 0, reason: '对端实例处于休眠状态' };
-      }
 
       if (fallbackRes.ok && fallbackContentType.includes('application/json')) {
         const fallbackData = JSON.parse(fallbackText);
@@ -557,7 +595,15 @@ export class ClusterManager {
           };
         }
       }
+
+      if (isAsleepResponse(fallbackText, fallbackContentType, fallbackRes.status) || probeStatusAsleep) {
+        return { online: false, isAsleep: true, role: 'unknown', priority: 0, reason: '对端实例处于休眠状态' };
+      }
     } catch { }
+
+    if (probeStatusAsleep) {
+      return { online: false, isAsleep: true, role: 'unknown', priority: 0, reason: '对端实例处于休眠状态' };
+    }
 
     return { online: false, isAsleep: false, role: 'unknown', priority: 0 };
   }

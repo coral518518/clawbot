@@ -6,10 +6,6 @@ compatibility_flags = ["nodejs_compat"]
 browser = { binding = "MY_BROWSER" }
 workers_dev = false
 
-[observability.logs]
-enabled = true
-invocation_logs = true
-
 [[services]]
 binding = "D1_SERVICE"
 service = "d1"

@@ -296,7 +296,8 @@ async function handleSendMessage(request, env, url) {
         rawPayload: payload,
         cfg,
         requestUrl: url,
-        immediate: payload.immediate
+        immediate: payload.immediate,
+        env
     };
 
     // 4. 执行主要通道发送
@@ -946,7 +947,7 @@ async function sendWxPusher({ text, photo, parseMode, chatId, cfg, requestUrl, t
 let coralRegistryNodesCache = null;
 let lastCoralRegistryFetchTime = 0;
 
-async function fetchCoralCandidatesFromRegistry(registryUrl) {
+async function fetchCoralCandidatesFromRegistry(registryUrl, env = null) {
     if (!registryUrl) return [];
     const now = Date.now();
     if (coralRegistryNodesCache && now - lastCoralRegistryFetchTime < 30000) {
@@ -959,7 +960,13 @@ async function fetchCoralCandidatesFromRegistry(registryUrl) {
             endpoint = `${endpoint}/coral/api/registry/nodes`;
         }
 
-        const res = await fetch(endpoint, { signal: AbortSignal.timeout(4000) });
+        // 优先使用 Cloudflare Service Binding 直连内存总线（避免同账号 Worker 互相 fetch 被拦截）
+        let res;
+        if (env && env.REG_SERVICE && typeof env.REG_SERVICE.fetch === 'function') {
+            res = await env.REG_SERVICE.fetch(endpoint, { signal: AbortSignal.timeout(4000) });
+        } else {
+            res = await fetch(endpoint, { signal: AbortSignal.timeout(4000) });
+        }
         if (res.ok) {
             const data = await res.json();
             let rawList = [];
@@ -1004,14 +1011,14 @@ async function fetchCoralCandidatesFromRegistry(registryUrl) {
  * 2. 若填入的是逗号分隔的多个地址：依次作为备选；
  * 3. 若填入的是单个普通地址：直接作为唯一候选。
  */
-async function resolveCoralEndpoints(rawUrl) {
+async function resolveCoralEndpoints(rawUrl, env = null) {
     if (!rawUrl) return [];
     const trimmed = rawUrl.trim();
 
     // 智能识别注册中心地址
     const isRegistry = trimmed.includes('/registry') || trimmed.includes('/nodes') || trimmed.includes('/redis/get/');
     if (isRegistry) {
-        const dynamicNodes = await fetchCoralCandidatesFromRegistry(trimmed);
+        const dynamicNodes = await fetchCoralCandidatesFromRegistry(trimmed, env);
         if (dynamicNodes.length > 0) {
             return dynamicNodes.map(u => {
                 if (!u.includes('/coral/api/send') && !u.includes('/api/send')) {
@@ -1048,13 +1055,14 @@ async function sendCoralCompatible({
     text,
     photo,
     requestUrl,
-    rawPayload
+    rawPayload,
+    env = null
 }) {
     if (!webhookUrl) {
         throw new Error(`${serviceName}_WEBHOOK_URL is not configured (neither in URL params nor in env)`);
     }
 
-    const candidateUrls = await resolveCoralEndpoints(webhookUrl);
+    const candidateUrls = await resolveCoralEndpoints(webhookUrl, env);
     if (candidateUrls.length === 0) {
         throw new Error(`${serviceName}_WEBHOOK_URL 未配置有效的目标地址`);
     }
@@ -1135,12 +1143,22 @@ async function sendCoralCompatible({
     for (let i = 0; i < candidateUrls.length; i++) {
         const targetUrl = candidateUrls[i];
         try {
-            const response = await fetch(targetUrl, {
-                method: "POST",
-                headers: headers,
-                body: JSON.stringify(payload),
-                signal: AbortSignal.timeout(6000)
-            });
+            let response;
+            if (env && env.REG_SERVICE && typeof env.REG_SERVICE.fetch === 'function' && targetUrl.includes('coral.cc.cd')) {
+                response = await env.REG_SERVICE.fetch(targetUrl, {
+                    method: "POST",
+                    headers: headers,
+                    body: JSON.stringify(payload),
+                    signal: AbortSignal.timeout(6000)
+                });
+            } else {
+                response = await fetch(targetUrl, {
+                    method: "POST",
+                    headers: headers,
+                    body: JSON.stringify(payload),
+                    signal: AbortSignal.timeout(6000)
+                });
+            }
 
             if (response.ok) {
                 resJson = await parseSafeJson(response, serviceName);

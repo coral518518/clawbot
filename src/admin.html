@@ -778,7 +778,11 @@
           // 渲染对端节点列表
           const peersListEl = document.getElementById('valClusterPeersList');
           if (peers.length === 0) {
-            peersListEl.innerHTML = '<div style="font-size:12px; color:var(--text-muted); padding:8px; background:rgba(0,0,0,0.2); border-radius:6px;">未配置其他对端节点</div>';
+            if (c.registry && c.registry.enabled) {
+              peersListEl.innerHTML = '<div style="font-size:12px; color:var(--text-muted); padding:8px; background:rgba(0,0,0,0.2); border-radius:6px;">🌐 注册中心已登记本节点；暂无其它对端备机（新开云服务配置后将自动在此列出）</div>';
+            } else {
+              peersListEl.innerHTML = '<div style="font-size:12px; color:var(--text-muted); padding:8px; background:rgba(0,0,0,0.2); border-radius:6px;">未配置其他对端节点</div>';
+            }
           } else {
             peersListEl.innerHTML = peers.map(p => {
               let statusBadge = '<span style="color:#94a3b8; font-size:11px;">探测中...</span>';

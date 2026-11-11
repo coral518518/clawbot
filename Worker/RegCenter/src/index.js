@@ -445,10 +445,10 @@ let lastRemoteFlushTime = 0;
 /**
  * 获取注册中心最新活跃节点列表
  */
-async function getRegistryNodes(env) {
+async function getRegistryNodes(env, forceRefresh = false) {
     const now = Date.now();
     // 1. 若内存缓存且距上次远端拉取小于 25 秒，直接使用内存缓存
-    if (memoryRegistry && now - lastRemoteFetchTime < 25000) {
+    if (!forceRefresh && memoryRegistry && now - lastRemoteFetchTime < 25000) {
         pruneExpiredNodes(memoryRegistry);
         return Array.from(memoryRegistry.values());
     }
@@ -457,7 +457,10 @@ async function getRegistryNodes(env) {
     const storageApi = env.STORAGE_API_URL || DEFAULT_STORAGE_API;
     try {
         const res = await fetch(`${storageApi}/get/${REGISTRY_STORAGE_KEY}`, {
-            signal: AbortSignal.timeout(3500)
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36'
+            },
+            signal: AbortSignal.timeout(6000)
         });
         if (res.ok) {
             const data = await res.json();
@@ -467,9 +470,15 @@ async function getRegistryNodes(env) {
                     try { parsed = JSON.parse(parsed); } catch { }
                 }
                 if (Array.isArray(parsed)) {
-                    memoryRegistry = new Map();
+                    if (!memoryRegistry) memoryRegistry = new Map();
                     for (const item of parsed) {
-                        if (item && item.url) memoryRegistry.set(item.url, item);
+                        if (item && item.url) {
+                            const existing = memoryRegistry.get(item.url);
+                            // 保留更新的心跳时间戳，避免并发覆盖
+                            if (!existing || (item.lastSeen || 0) >= (existing.lastSeen || 0)) {
+                                memoryRegistry.set(item.url, item);
+                            }
+                        }
                     }
                 }
             }
@@ -498,27 +507,30 @@ function pruneExpiredNodes(map) {
 }
 
 /**
- * 保存注册表状态（带 45s 防抖，保护 Cloudflare 免费层级配额）
+ * 持久化注册表状态至远端存储 (D1 / Redis REST)
  */
-function scheduleRegistryFlush(env, ctx, immediate = false) {
-    const now = Date.now();
-    if (!immediate && now - lastRemoteFlushTime < REMOTE_FLUSH_INTERVAL_MS) {
-        return; // 防抖节流中，跳过本次远端落盘
-    }
-
-    lastRemoteFlushTime = now;
+async function saveRegistryNodes(env) {
     const storageApi = env.STORAGE_API_URL || DEFAULT_STORAGE_API;
     const nodes = memoryRegistry ? Array.from(memoryRegistry.values()) : [];
 
-    const flushPromise = fetch(`${storageApi}/set/${REGISTRY_STORAGE_KEY}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(nodes),
-        signal: AbortSignal.timeout(5000)
-    }).catch(err => {
-        console.warn(`[Registry] 异步持久化至远端失败: ${err.message}`);
-    });
+    try {
+        await fetch(`${storageApi}/set/${REGISTRY_STORAGE_KEY}`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36'
+            },
+            body: JSON.stringify(nodes),
+            signal: AbortSignal.timeout(6000)
+        });
+        lastRemoteFlushTime = Date.now();
+    } catch (err) {
+        console.warn(`[Registry] 持久化至远端失败: ${err.message}`);
+    }
+}
 
+function scheduleRegistryFlush(env, ctx, immediate = false) {
+    const flushPromise = saveRegistryNodes(env);
     if (ctx && typeof ctx.waitUntil === 'function') {
         ctx.waitUntil(flushPromise);
     }
@@ -626,7 +638,7 @@ export async function fetch(req, env, ctx) {
         };
 
         memoryRegistry.set(nodeUrl, nodeInfo);
-        scheduleRegistryFlush(env, ctx, false);
+        await saveRegistryNodes(env);
 
         const allNodes = Array.from(memoryRegistry.values());
         // 对端列表：剔除调用方自身的其他所有存活对端
@@ -647,7 +659,7 @@ export async function fetch(req, env, ctx) {
     // 2. 动态拉取对端列表接口: GET /coral/api/registry/peers 或 GET /api/registry/peers
     if ((pathname === `${prefix}/api/registry/peers` || pathname === '/api/registry/peers') && req.method === 'GET') {
         const exclude = (url.searchParams.get('exclude') || '').trim().replace(/\/+$/, '');
-        const allNodes = await getRegistryNodes(env);
+        const allNodes = await getRegistryNodes(env, true);
         const peers = allNodes.map(n => n.url).filter(u => u && u !== exclude);
 
         return new Response(JSON.stringify({
@@ -661,7 +673,7 @@ export async function fetch(req, env, ctx) {
     // 3. 查看全集群节点状态: GET /coral/api/registry/nodes 或 GET /api/registry/nodes 或 /api/registry/status
     if (pathname === `${prefix}/api/registry/nodes` || pathname === '/api/registry/nodes' ||
         pathname === `${prefix}/api/registry/status` || pathname === '/api/registry/status') {
-        const allNodes = await getRegistryNodes(env);
+        const allNodes = await getRegistryNodes(env, true);
         return new Response(JSON.stringify({
             success: true,
             count: allNodes.length,
@@ -676,7 +688,7 @@ export async function fetch(req, env, ctx) {
         const nodeUrl = (body.url || '').trim().replace(/\/+$/, '');
         if (nodeUrl && memoryRegistry && memoryRegistry.has(nodeUrl)) {
             memoryRegistry.delete(nodeUrl);
-            scheduleRegistryFlush(env, ctx, true);
+            await saveRegistryNodes(env);
             console.log(`[Registry] 节点 (${nodeUrl}) 已优雅注销下线`);
         }
         return new Response(JSON.stringify({ success: true, message: 'Node unregistered successfully' }), { headers: corsHeaders });

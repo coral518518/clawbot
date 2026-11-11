@@ -253,6 +253,9 @@ export class ClusterManager {
           if (changed && this.peerUrls.length > 0) {
             // 对端列表发生变动，立即触发一次探测
             this._probeAllPeers().catch(() => {});
+          } else if (this.peerUrls.length === 0 && config.nodeRole !== 'standby' && this.role !== 'master') {
+            console.log('[Cluster] 注册中心暂无其它存活对端，当前节点自动接管为 Master');
+            await this.promoteToMaster('注册中心无其它在线节点');
           }
         }
       } else {

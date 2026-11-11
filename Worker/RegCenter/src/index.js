@@ -108,11 +108,12 @@ async function directHttpWake(targetUrl) {
     }
 }
 
-// 核心改动 1：使用具名导出 export async function scheduled
-export async function scheduled(event, env, ctx) {
-    const targetUrl = env.BLITZ_APP_URL || '';
-    if (!targetUrl) {
-        console.error('Fatal: BLITZ_APP_URL is missing.');
+/**
+ * 完整 Puppeteer 拟人浏览器保活（作为 HTTP 唤醒无法奏效时的终极兜底）
+ */
+async function browserKeepAlive(targetUrl, env) {
+    if (!env.MY_BROWSER) {
+        console.warn('[Keep-Alive] MY_BROWSER binding is not available. Skipping browser keep-alive.');
         return;
     }
 
@@ -241,7 +242,7 @@ export async function scheduled(event, env, ctx) {
 
         await randomSleep(800, 1500);
 
-        // 1. 检查是否处于 blitz 休眠拦截页 (<main data-kind="asleep"> 或含 "This app is asleep")
+        // 检查是否处于 blitz 休眠拦截页
         const sleepState = await page.evaluate(() => {
             const asleepCard = document.querySelector('[data-kind="asleep"]');
             const wakeForm = document.querySelector('form input[name="blitz-wake"]');
@@ -269,8 +270,6 @@ export async function scheduled(event, env, ctx) {
 
         if (sleepState.isAsleep) {
             console.log(`[Keep-Alive] Blitz instance is ASLEEP! Locating 'Wake it up' button...`);
-
-            // 智能查找唤醒按钮（包含 submit 按钮、带 blitz-wake 的表单按钮、.btn 类等）
             const wakeBtnHandle = await page.$('[data-kind="asleep"] button, form input[name="blitz-wake"] ~ p button, form button[type="submit"], button.btn');
 
             let clicked = false;
@@ -279,7 +278,7 @@ export async function scheduled(event, env, ctx) {
                 if (box) {
                     const btnX = box.x + box.width / 2 + getRandomInt(-6, 6);
                     const btnY = box.y + box.height / 2 + getRandomInt(-4, 4);
-                    console.log(`[Keep-Alive] Simulating human Bezier mouse trajectory to 'Wake it up' button at (${Math.round(btnX)}, ${Math.round(btnY)})...`);
+                    console.log(`[Keep-Alive] Simulating human Bezier mouse trajectory to button at (${Math.round(btnX)}, ${Math.round(btnY)})...`);
                     await humanMouseMove(page, curX, curY, btnX, btnY);
                     curX = btnX;
                     curY = btnY;
@@ -288,13 +287,12 @@ export async function scheduled(event, env, ctx) {
                     await page.mouse.click(btnX, btnY, { delay: getRandomInt(80, 140) });
                     clicked = true;
                 } else {
-                    console.log(`[Keep-Alive] Button bounding box not available, triggering direct handle.click()...`);
+                    console.log(`[Keep-Alive] Button bounding box not available, triggering handle.click()...`);
                     await wakeBtnHandle.click();
                     clicked = true;
                 }
             }
 
-            // 双重兜底：如果点击未触发跳转，经过 2 秒检查后直接调用表单 submit()
             await randomSleep(1500, 2500);
             const stillAsleepCheck = await page.evaluate(() => {
                 return Boolean(document.querySelector('[data-kind="asleep"]') || document.querySelector('input[name="blitz-wake"]'));
@@ -308,11 +306,10 @@ export async function scheduled(event, env, ctx) {
                 });
             }
 
-            // 等待容器冷启动完成（Blitz 通常会进入 "waking up" 页面，耗时约 5-15 秒启动容器）
+            // 等待容器冷启动完成
             console.log(`[Keep-Alive] Waiting for container cold start to complete...`);
             const maxWaitMs = 35000;
             const startWait = Date.now();
-            let appReady = false;
 
             while (Date.now() - startWait < maxWaitMs) {
                 await randomSleep(2000, 3000);
@@ -327,7 +324,6 @@ export async function scheduled(event, env, ctx) {
                 console.log(`[Keep-Alive] Polling container status: title="${check.title}", asleep=${check.asleep}, waking=${check.waking}`);
 
                 if (!check.asleep && !check.waking) {
-                    appReady = true;
                     console.log(`[Keep-Alive] Cold start finished! Project is online.`);
                     break;
                 }
@@ -336,16 +332,12 @@ export async function scheduled(event, env, ctx) {
             console.log(`[Keep-Alive] Project is already online (not asleep).`);
         }
 
-        // 2. 容器上线后，在实际项目页面模拟真人行为（鼠标平滑轨迹、滚动与安全空白处点击），向 Blitz 登记真实活跃会话
+        // 模拟真人交互活跃度
         await randomSleep(800, 1500);
-
         let targetX = getRandomInt(350, 650);
         let targetY = getRandomInt(250, 480);
         await humanMouseMove(page, curX, curY, targetX, targetY);
-        curX = targetX;
-        curY = targetY;
 
-        // 仅在非敏感元素（非链接、非按钮、非表单）上点击，激活窗口焦点的同时防止误点应用功能
         const isSafeNode = await page.evaluate((x, y) => {
             const el = document.elementFromPoint(x, y);
             if (!el) return false;
@@ -353,11 +345,11 @@ export async function scheduled(event, env, ctx) {
             if (['A', 'BUTTON', 'INPUT', 'SELECT', 'TEXTAREA', 'FORM', 'IFRAME'].includes(tag)) return false;
             if (el.closest('a') || el.closest('button')) return false;
             return true;
-        }, curX, curY);
+        }, targetX, targetY);
 
         if (isSafeNode) {
             await randomSleep(200, 400);
-            await page.mouse.click(curX, curY, { delay: getRandomInt(60, 100) });
+            await page.mouse.click(targetX, targetY, { delay: getRandomInt(60, 100) });
         }
 
         await randomSleep(400, 700);
@@ -365,13 +357,11 @@ export async function scheduled(event, env, ctx) {
         await randomSleep(500, 800);
         await page.evaluate(() => window.scrollBy({ top: -80, behavior: 'smooth' }));
 
-        // 保持 3-5 秒建立稳定的心跳与连接
         await randomSleep(3000, 5000);
         console.log('[Keep-Alive] Keep-alive ping finished successfully.');
     } catch (err) {
         console.error('[Keep-Alive] Execution failure during keep-alive:', err.message);
 
-        // 关键容灾兜底：当遇到 429 限流或浏览器无法启动时，无缝切换为纯 HTTP Token 唤醒
         if (err.message && (err.message.includes('429') || err.message.includes('Unable to create new browser') || err.message.includes('Rate limit exceeded'))) {
             console.log('[Keep-Alive] Cloudflare browser rate limited (429). Triggering direct HTTP token-wake fallback...');
             try {
@@ -392,14 +382,307 @@ export async function scheduled(event, env, ctx) {
     }
 }
 
+/**
+ * 针对 Cloudflare 免费额度深度优化的智能探活：
+ * 1. 先用轻量 HTTP GET 探活（毫秒级、0 浏览器会话消耗）；
+ * 2. 若实例正常在线（HTTP 200 且无休眠特征），直接退出，绝不调用昂贵的 Puppeteer；
+ * 3. 若发现休眠（含 blitz-wake 表单），优先用 directHttpWake (0 浏览器配额) 快速唤醒；
+ * 4. 仅在 HTTP 唤醒无法解决时，才启动 Puppeteer 无头浏览器。
+ */
+async function smartKeepAlive(targetUrl, env) {
+    if (!targetUrl) return false;
+    console.log(`[Smart Keep-Alive] Probing target: ${targetUrl}`);
+    const headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+    };
+
+    try {
+        const probeRes = await fetch(targetUrl, { headers, signal: AbortSignal.timeout(5000) });
+        const text = await probeRes.text();
+        const lower = text.toLowerCase();
+        const isAsleep = lower.includes('this app is asleep') ||
+            lower.includes('data-kind="asleep"') ||
+            lower.includes('blitz-wake') ||
+            lower.includes('starting container') ||
+            lower.includes('waking up');
+
+        if (probeRes.ok && !isAsleep) {
+            console.log(`[Smart Keep-Alive] Target ${targetUrl} is ALREADY ONLINE (HTTP ${probeRes.status}). Skipped browser launch, 0 quota used!`);
+            return true;
+        }
+
+        console.log(`[Smart Keep-Alive] Target ${targetUrl} is ASLEEP (status ${probeRes.status}). Attempting zero-quota direct HTTP wake...`);
+        const httpWakeSuccess = await directHttpWake(targetUrl);
+        if (httpWakeSuccess) {
+            console.log(`[Smart Keep-Alive] Direct HTTP wake SUCCEEDED for ${targetUrl}! Skipped browser launch.`);
+            return true;
+        }
+    } catch (probeErr) {
+        console.warn(`[Smart Keep-Alive] HTTP probe error for ${targetUrl}: ${probeErr.message}`);
+    }
+
+    // 终极兜底：仅在 HTTP 探活与唤醒均未能解决时，才启动 Puppeteer
+    if (env.MY_BROWSER) {
+        console.log(`[Smart Keep-Alive] Falling back to Puppeteer Browser Rendering for ${targetUrl}...`);
+        await browserKeepAlive(targetUrl, env);
+    }
+}
+
+// ==============================================================================
+// 动态服务注册中心 (Service Registry) - 轻量持久化与内存缓存
+// 针对 Cloudflare 免费层级深度优化：内存缓存 + 45s 写入防抖，杜绝超额
+// ==============================================================================
+const DEFAULT_STORAGE_API = 'https://d1.coral001.de5.net/redis';
+const REGISTRY_STORAGE_KEY = 'clawbot_registry';
+const NODE_EXPIRE_TTL_MS = 180000; // 3 分钟未上报心跳视为失联剔除
+const REMOTE_FLUSH_INTERVAL_MS = 45000; // 写入远端防抖间隔（45 秒），每日写入量 < 2000 次
+
+let memoryRegistry = null; // Map<url, NodeInfo>
+let lastRemoteFetchTime = 0;
+let lastRemoteFlushTime = 0;
+
+/**
+ * 获取注册中心最新活跃节点列表
+ */
+async function getRegistryNodes(env) {
+    const now = Date.now();
+    // 1. 若内存缓存且距上次远端拉取小于 25 秒，直接使用内存缓存
+    if (memoryRegistry && now - lastRemoteFetchTime < 25000) {
+        pruneExpiredNodes(memoryRegistry);
+        return Array.from(memoryRegistry.values());
+    }
+
+    // 2. 从远端 D1 / Redis REST 接口同步最新全网状态
+    const storageApi = env.STORAGE_API_URL || DEFAULT_STORAGE_API;
+    try {
+        const res = await fetch(`${storageApi}/get/${REGISTRY_STORAGE_KEY}`, {
+            signal: AbortSignal.timeout(3500)
+        });
+        if (res.ok) {
+            const data = await res.json();
+            if (data && data.value) {
+                let parsed = typeof data.value === 'string' ? JSON.parse(data.value) : data.value;
+                if (typeof parsed === 'string') {
+                    try { parsed = JSON.parse(parsed); } catch { }
+                }
+                if (Array.isArray(parsed)) {
+                    memoryRegistry = new Map();
+                    for (const item of parsed) {
+                        if (item && item.url) memoryRegistry.set(item.url, item);
+                    }
+                }
+            }
+        }
+    } catch (err) {
+        console.warn(`[Registry] 拉取远端节点表告警 (${err.message})，回退至内存缓存`);
+    }
+
+    if (!memoryRegistry) memoryRegistry = new Map();
+    lastRemoteFetchTime = now;
+    pruneExpiredNodes(memoryRegistry);
+    return Array.from(memoryRegistry.values());
+}
+
+/**
+ * 剔除失联超期的节点
+ */
+function pruneExpiredNodes(map) {
+    const now = Date.now();
+    for (const [url, node] of map.entries()) {
+        if (now - (node.lastSeen || 0) > NODE_EXPIRE_TTL_MS) {
+            console.log(`[Registry] 节点 (${url}) 超过 3 分钟未上报，已被自动移出活跃集群`);
+            map.delete(url);
+        }
+    }
+}
+
+/**
+ * 保存注册表状态（带 45s 防抖，保护 Cloudflare 免费层级配额）
+ */
+function scheduleRegistryFlush(env, ctx, immediate = false) {
+    const now = Date.now();
+    if (!immediate && now - lastRemoteFlushTime < REMOTE_FLUSH_INTERVAL_MS) {
+        return; // 防抖节流中，跳过本次远端落盘
+    }
+
+    lastRemoteFlushTime = now;
+    const storageApi = env.STORAGE_API_URL || DEFAULT_STORAGE_API;
+    const nodes = memoryRegistry ? Array.from(memoryRegistry.values()) : [];
+
+    const flushPromise = fetch(`${storageApi}/set/${REGISTRY_STORAGE_KEY}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(nodes),
+        signal: AbortSignal.timeout(5000)
+    }).catch(err => {
+        console.warn(`[Registry] 异步持久化至远端失败: ${err.message}`);
+    });
+
+    if (ctx && typeof ctx.waitUntil === 'function') {
+        ctx.waitUntil(flushPromise);
+    }
+}
+
+// 定时触发探活（可配置于 wrangler.toml [triggers] crons）
+export async function scheduled(event, env, ctx) {
+    const targets = new Set();
+    if (env.BLITZ_APP_URL && !env.BLITZ_APP_URL.includes('your-blitz-instance')) {
+        targets.add(env.BLITZ_APP_URL);
+    }
+
+    try {
+        const registeredNodes = await getRegistryNodes(env);
+        for (const node of registeredNodes) {
+            if (node.url) targets.add(node.url);
+        }
+    } catch { }
+
+    if (targets.size === 0) {
+        console.log('[Scheduled] No targets configured or registered.');
+        return;
+    }
+
+    console.log(`[Scheduled] Keep-alive cycle starting for ${targets.size} target(s): ${Array.from(targets).join(', ')}`);
+    for (const target of targets) {
+        try {
+            await smartKeepAlive(target, env);
+        } catch (err) {
+            console.error(`[Scheduled] Error keeping alive ${target}:`, err.message);
+        }
+    }
+}
+
 export async function fetch(req, env, ctx) {
     const url = new URL(req.url);
     const pathname = url.pathname.replace(/\/+$/, '') || '/';
     const targetUrl = env.BLITZ_APP_URL || 'https://clawbot.coral.blitz.cloud';
     const isConfigured = Boolean(targetUrl && !targetUrl.includes('your-blitz-instance'));
+    const prefix = (env.ROUTE_PREFIX || '/coral').replace(/\/+$/, '');
 
-    // 手动触发保活接口 (/trigger 或 /coral/trigger)
-    if (pathname === '/trigger' || pathname === '/coral/trigger') {
+    // 跨域支持
+    if (req.method === 'OPTIONS') {
+        return new Response(null, {
+            headers: {
+                'Access-Control-Allow-Origin': '*',
+                'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+                'Access-Control-Allow-Headers': 'Content-Type, x-api-key, Authorization',
+            }
+        });
+    }
+
+    const corsHeaders = {
+        'Access-Control-Allow-Origin': '*',
+        'Content-Type': 'application/json; charset=utf-8'
+    };
+
+    // 密钥校验辅助函数
+    const isAuthorized = () => {
+        const expectedKey = env.API_KEY;
+        if (!expectedKey) return true; // 未在 Worker 配置 API_KEY 则放行
+        const incomingKey = req.headers.get('x-api-key') || url.searchParams.get('api_key');
+        return incomingKey === expectedKey;
+    };
+
+    // 1. 动态服务注册与心跳接口: POST /coral/api/registry/heartbeat 或 POST /api/registry/heartbeat
+    if ((pathname === `${prefix}/api/registry/heartbeat` || pathname === '/api/registry/heartbeat') && req.method === 'POST') {
+        if (!isAuthorized()) {
+            return new Response(JSON.stringify({ success: false, error: 'Unauthorized: invalid API key' }), {
+                status: 401,
+                headers: corsHeaders
+            });
+        }
+
+        const body = await req.json().catch(() => ({}));
+        let nodeUrl = (body.url || '').trim().replace(/\/+$/, '');
+
+        // 若请求体未提供自身 URL，尝试从请求头反向识别
+        if (!nodeUrl) {
+            const origin = req.headers.get('origin');
+            if (origin && !origin.includes('localhost') && !origin.includes('127.0.0.1')) {
+                nodeUrl = origin.trim().replace(/\/+$/, '');
+            }
+        }
+
+        if (!nodeUrl) {
+            return new Response(JSON.stringify({
+                success: false,
+                error: '缺少节点 url 字段，请在节点环境配置 SELF_URL (如 https://clawbot-miget.yourdomain.com)'
+            }), { status: 400, headers: corsHeaders });
+        }
+
+        await getRegistryNodes(env);
+
+        const nodeInfo = {
+            url: nodeUrl,
+            priority: Number(body.priority) || 50,
+            role: body.role || 'standby',
+            status: body.status || 'RUNNING',
+            hasContextToken: Boolean(body.hasContextToken),
+            remainingQuota: Number(body.remainingQuota) ?? 10,
+            lastSeen: Date.now(),
+            clientIp: req.headers.get('cf-connecting-ip') || null
+        };
+
+        memoryRegistry.set(nodeUrl, nodeInfo);
+        scheduleRegistryFlush(env, ctx, false);
+
+        const allNodes = Array.from(memoryRegistry.values());
+        // 对端列表：剔除调用方自身的其他所有存活对端
+        const peers = allNodes
+            .map(n => n.url)
+            .filter(u => u && u !== nodeUrl);
+
+        return new Response(JSON.stringify({
+            success: true,
+            selfUrl: nodeUrl,
+            peers,
+            nodes: allNodes,
+            count: allNodes.length,
+            timestamp: Date.now()
+        }, null, 2), { headers: corsHeaders });
+    }
+
+    // 2. 动态拉取对端列表接口: GET /coral/api/registry/peers 或 GET /api/registry/peers
+    if ((pathname === `${prefix}/api/registry/peers` || pathname === '/api/registry/peers') && req.method === 'GET') {
+        const exclude = (url.searchParams.get('exclude') || '').trim().replace(/\/+$/, '');
+        const allNodes = await getRegistryNodes(env);
+        const peers = allNodes.map(n => n.url).filter(u => u && u !== exclude);
+
+        return new Response(JSON.stringify({
+            success: true,
+            peers,
+            count: peers.length,
+            timestamp: Date.now()
+        }, null, 2), { headers: corsHeaders });
+    }
+
+    // 3. 查看全集群节点状态: GET /coral/api/registry/nodes 或 GET /api/registry/nodes 或 /api/registry/status
+    if (pathname === `${prefix}/api/registry/nodes` || pathname === '/api/registry/nodes' ||
+        pathname === `${prefix}/api/registry/status` || pathname === '/api/registry/status') {
+        const allNodes = await getRegistryNodes(env);
+        return new Response(JSON.stringify({
+            success: true,
+            count: allNodes.length,
+            nodes: allNodes,
+            timestamp: Date.now()
+        }, null, 2), { headers: corsHeaders });
+    }
+
+    // 4. 节点优雅退出注销接口: POST /coral/api/registry/unregister 或 POST /api/registry/unregister
+    if ((pathname === `${prefix}/api/registry/unregister` || pathname === '/api/registry/unregister') && req.method === 'POST') {
+        const body = await req.json().catch(() => ({}));
+        const nodeUrl = (body.url || '').trim().replace(/\/+$/, '');
+        if (nodeUrl && memoryRegistry && memoryRegistry.has(nodeUrl)) {
+            memoryRegistry.delete(nodeUrl);
+            scheduleRegistryFlush(env, ctx, true);
+            console.log(`[Registry] 节点 (${nodeUrl}) 已优雅注销下线`);
+        }
+        return new Response(JSON.stringify({ success: true, message: 'Node unregistered successfully' }), { headers: corsHeaders });
+    }
+
+    // 5. 手动触发保活接口 (/trigger 或 /coral/trigger)
+    if (pathname === '/trigger' || pathname === `${prefix}/trigger`) {
         if (!isConfigured) {
             return new Response(JSON.stringify({
                 status: 'error',
@@ -437,9 +720,9 @@ export async function fetch(req, env, ctx) {
         <div class="success-icon">🚀</div>
         <div class="badge">已触发后台执行</div>
         <h1>保活任务已在后台启动</h1>
-        <p>边缘浏览器正在拉起会话并执行拟人操作，过程约需 10-20 秒。</p>
+        <p>系统已采用先 HTTP 探活与无头浏览器兜底策略，正在执行检测与保活。</p>
         <p>您可以通过命令行运行 <code>npm run tail</code> 实时查看详细保活日志。</p>
-        <a href="/coral" class="btn">返回仪表盘</a>
+        <a href="${prefix}" class="btn">返回仪表盘</a>
     </div>
 </body>
 </html>`, {
@@ -456,32 +739,52 @@ export async function fetch(req, env, ctx) {
         });
     }
 
-    // 仅允许 /coral 访问仪表盘页面
-    if (pathname === '/coral') {
+    // 6. 控制面板页面 (/coral)
+    if (pathname === prefix || pathname === '/') {
         const acceptsHtml = req.headers.get('accept')?.includes('text/html');
+        const registeredNodes = await getRegistryNodes(env);
+
         if (acceptsHtml) {
+            const nodesRows = registeredNodes.length === 0
+                ? `<tr><td colspan="4" style="padding: 16px; text-align: center; color: #64748b;">暂无已注册节点（请在各容器云配置 REGISTRY_URL）</td></tr>`
+                : registeredNodes.map(n => {
+                    const agoSec = Math.round((Date.now() - (n.lastSeen || 0)) / 1000);
+                    const isMaster = n.role === 'master';
+                    return `<tr style="border-bottom: 1px solid #1e293b;">
+                        <td style="padding: 12px; font-family: monospace; color: #38bdf8; word-break: break-all;">${n.url}</td>
+                        <td style="padding: 12px;"><span class="badge ${isMaster ? 'badge-master' : 'badge-standby'}">${isMaster ? '★ MASTER' : 'STANDBY'}</span></td>
+                        <td style="padding: 12px; font-weight: 600; color: #f8fafc;">${n.priority || 50}</td>
+                        <td style="padding: 12px; color: #94a3b8; font-size: 13px;">${agoSec}s 前</td>
+                    </tr>`;
+                }).join('');
+
             return new Response(`<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BlitzCloud 保活引擎 - Cloudflare Worker</title>
+    <title>Clawbot 边缘服务中心 - Cloudflare Worker</title>
     <style>
         * { box-sizing: border-box; }
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0b1120; color: #f8fafc; min-height: 100vh; margin: 0; display: flex; align-items: center; justify-content: center; padding: 24px; }
-        .container { background: #1e293b; border-radius: 20px; max-width: 580px; width: 100%; padding: 36px; box-shadow: 0 20px 40px -15px rgba(0,0,0,0.7); border: 1px solid #334155; }
+        .container { background: #1e293b; border-radius: 20px; max-width: 680px; width: 100%; padding: 36px; box-shadow: 0 20px 40px -15px rgba(0,0,0,0.7); border: 1px solid #334155; }
         .header { display: flex; align-items: center; gap: 14px; margin-bottom: 24px; }
-        .logo { width: 44px; height: 44px; background: linear-gradient(135deg, #f59e0b, #ef4444); border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 22px; }
+        .logo { width: 44px; height: 44px; background: linear-gradient(135deg, #38bdf8, #3b82f6); border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 22px; }
         h1 { margin: 0; font-size: 22px; font-weight: 700; color: #fff; }
         .subtitle { color: #94a3b8; font-size: 13px; margin: 2px 0 0; }
         .status-badge { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; }
         .badge-green { background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.3); }
         .badge-yellow { background: rgba(245, 158, 11, 0.15); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.3); }
+        .badge-master { background: rgba(56, 189, 248, 0.2); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.4); padding: 3px 8px; border-radius: 6px; font-size: 11px; font-weight: bold; }
+        .badge-standby { background: rgba(148, 163, 184, 0.15); color: #94a3b8; border: 1px solid rgba(148, 163, 184, 0.3); padding: 3px 8px; border-radius: 6px; font-size: 11px; }
         .dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
-        .info-grid { display: grid; gap: 12px; margin: 24px 0; }
+        .info-grid { display: grid; gap: 12px; margin: 20px 0; }
         .info-card { background: #0f172a; border-radius: 10px; padding: 14px 16px; border: 1px solid #334155; }
         .info-title { font-size: 12px; color: #64748b; text-transform: uppercase; font-weight: 600; margin-bottom: 6px; }
         .info-val { font-family: monospace; font-size: 14px; color: #e2e8f0; word-break: break-all; }
+        .table-wrap { background: #0f172a; border-radius: 12px; border: 1px solid #334155; overflow: hidden; margin-top: 20px; }
+        table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        th { background: #1e293b; padding: 10px 12px; text-align: left; color: #94a3b8; font-weight: 600; font-size: 12px; }
         .actions { display: flex; gap: 12px; margin-top: 24px; }
         .btn { flex: 1; text-align: center; padding: 12px 18px; border-radius: 10px; font-size: 14px; font-weight: 600; text-decoration: none; cursor: pointer; border: none; transition: all 0.2s; }
         .btn-primary { background: #3b82f6; color: white; }
@@ -495,37 +798,54 @@ export async function fetch(req, env, ctx) {
         <div class="header">
             <div class="logo">⚡</div>
             <div style="flex: 1;">
-                <h1>BlitzCloud 保活引擎</h1>
-                <div class="subtitle">Cloudflare Worker + Puppeteer Browser Rendering</div>
+                <h1>Clawbot 边缘服务中心</h1>
+                <div class="subtitle">动态服务注册与发现 · 智能低消耗保活引擎</div>
             </div>
-            <span class="status-badge ${isConfigured ? 'badge-green' : 'badge-yellow'}">
-                <span class="dot"></span>${isConfigured ? '运行就绪' : '待配置'}
+            <span class="status-badge ${registeredNodes.length > 0 ? 'badge-green' : 'badge-yellow'}">
+                <span class="dot"></span>${registeredNodes.length > 0 ? `集群在线 (${registeredNodes.length} 节点)` : '待节点接入'}
             </span>
         </div>
 
         <div class="info-grid">
             <div class="info-card">
-                <div class="info-title">保活目标状态 (Target Status)</div>
-                <div class="info-val">${isConfigured ? '<span style="color:#34d399">● 目标服务已配置（地址已保护隐藏）</span>' : '<span style="color:#f87171">尚未配置目标网址</span>'}</div>
+                <div class="info-title">注册中心接入地址 (REGISTRY_URL)</div>
+                <div class="info-val">${url.origin}${prefix}/api/registry/heartbeat</div>
             </div>
             <div class="info-card">
-                <div class="info-title">保活触发模式 (Trigger Mode)</div>
-                <div class="info-val">接口调用 <code>/trigger</code> 或 <code>/coral/trigger</code> (双引擎保活：拟人浏览器 + 429 HTTP 自动容灾)</div>
+                <div class="info-title">Cloudflare 免费层级保护模式</div>
+                <div class="info-val">轻量 HTTP 预探活 (0 浏览器会话消耗) + 45s 持久化防抖节流</div>
             </div>
-            <div class="info-card">
-                <div class="info-title">浏览器渲染引擎 (Browser Binding)</div>
-                <div class="info-val">MY_BROWSER (已绑定 Cloudflare 边缘 Chromium)</div>
-            </div>
+        </div>
+
+        <div style="margin-top: 24px; font-size: 14px; font-weight: 600; color: #e2e8f0; display: flex; justify-content: space-between; align-items: center;">
+            <span>🌐 动态发现的集群节点池</span>
+            <span style="font-size: 12px; color: #64748b;">(3 分钟无心跳自动移出)</span>
+        </div>
+
+        <div class="table-wrap">
+            <table>
+                <thead>
+                    <tr>
+                        <th>节点 URL</th>
+                        <th>角色</th>
+                        <th>权重</th>
+                        <th>最后心跳</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${nodesRows}
+                </tbody>
+            </table>
         </div>
 
         <div class="actions">
-            <a href="/coral/trigger" class="btn btn-primary">🚀 手动执行一次保活测试</a>
+            <a href="${prefix}/trigger" class="btn btn-primary">🚀 手动执行一次保活检测</a>
         </div>
 
         <div class="tips">
-            💡 <strong>使用提示：</strong><br>
-            • 查看实时日志：在本地终端运行 <code>npm run tail</code> (或 <code>npx wrangler tail</code>)。<br>
-            • 保活端点支持 <code>/trigger</code> 与 <code>/coral/trigger</code>。
+            💡 <strong>免手动修改 PEER_URLS 指南：</strong><br>
+            • 在新云平台部署时，仅需添加 <code>REGISTRY_URL=${url.origin}${prefix}/api/registry</code> 与 <code>SELF_URL=https://当前节点网址</code>。<br>
+            • 其他所有现有容器将在 60 秒内通过注册中心全自动发现新节点并完成热备组网，零人工配置！
         </div>
     </div>
 </body>
@@ -535,23 +855,22 @@ export async function fetch(req, env, ctx) {
         }
 
         return new Response(JSON.stringify({
-            service: 'blitz-keepalive',
-            status: isConfigured ? 'active' : 'needs_configuration',
-            cron: '*/20 * * * *',
-            feature: 'blitz-gate-auto-wake'
+            service: 'clawbot-edge-gateway',
+            registryNodes: registeredNodes,
+            count: registeredNodes.length,
+            feature: 'dynamic-service-discovery-and-smart-keepalive'
         }, null, 2), {
-            headers: { 'Content-Type': 'application/json; charset=utf-8' }
+            headers: corsHeaders
         });
     }
 
-    // 除了 /coral 页面与保活接口之外，其余路由统一返回 404
+    // 其余未匹配路由统一返回 404
     return new Response('404 Not Found', {
         status: 404,
         headers: { 'Content-Type': 'text/plain; charset=utf-8' }
     });
 }
 
-// 导出 default 对象适配 Cloudflare Module Worker
 export default {
     scheduled,
     fetch,

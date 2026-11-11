@@ -1,0 +1,17 @@
+name = "blitz-cloud-auto"
+main = "src/index.js"
+compatibility_date = "2026-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+browser = { binding = "MY_BROWSER" }
+
+# 定时保活探活任务（15 分钟一次，配合智能 HTTP 先探活策略，在线时 0 消耗 Browser Rendering 额度）
+[triggers]
+crons = ["*/15 * * * *"]
+
+[vars]
+BLITZ_APP_URL = "https://clawbot.coral.blitz.cloud"
+# 统一访问前缀（与 clawbot 的 ROUTE_PREFIX 保持一致）
+ROUTE_PREFIX = "/coral"
+# 远端注册表持久化 REST 接口 (默认已适配 d1.coral001.de5.net，零配置开箱即用)
+STORAGE_API_URL = "https://d1.coral001.de5.net/redis"

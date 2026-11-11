@@ -52,13 +52,16 @@ function resolveDataDir() {
   }
 }
 
-// 解析集群对端列表（支持逗号分隔的 PEER_URLS 或单对端 PEER_URL）
-function parsePeerUrls() {
-  const raw = process.env.PEER_URLS || process.env.PEER_URL || '';
-  return raw
-    .split(',')
-    .map(u => u.trim().replace(/\/+$/, ''))
-    .filter(u => u.length > 0);
+// 解析自身对外访问 URL（配合动态注册中心上报）
+function resolveSelfUrl() {
+  const raw = process.env.SELF_URL || process.env.PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || '';
+  return raw.trim().replace(/\/+$/, '');
+}
+
+// 解析动态服务注册与发现中心 URL（如 https://your-worker.workers.dev/coral/api/registry）
+function resolveRegistryUrl() {
+  const raw = process.env.REGISTRY_URL || process.env.CLUSTER_REGISTRY_URL || '';
+  return raw.trim().replace(/\/+$/, '');
 }
 
 // 解析节点优先级权重（用于多节点故障转移选举，数值越高优先级越高）
@@ -73,7 +76,6 @@ function resolveNodePriority(role) {
 }
 
 const parsedNodeRole = (process.env.NODE_ROLE || 'auto').trim().toLowerCase();
-const parsedPeerUrls = parsePeerUrls();
 
 export const config = {
   port: parseInt(process.env.PORT || '5000', 10),
@@ -95,9 +97,12 @@ export const config = {
   triggerAuthKey: process.env.TRIGGER_AUTH_KEY || '',
   // 每日远端冷备接口（主节点每日将最新凭证备份至此，以防全集群被清空）
   dailyBackupUrl: process.env.DAILY_BACKUP_URL || 'https://d1.coral001.de5.net/redis/set/clawbot',
-  // 多机高可用集群配置 (如 orkestr <-> Miget <-> Blitz Cloud 跨云热备)
-  peerUrls: parsedPeerUrls,
-  peerUrl: parsedPeerUrls[0] || '', // 向后兼容旧代码引用
+  // 动态服务注册与发现中心 (全自动发现节点与主备选举)
+  registryUrl: resolveRegistryUrl(),
+  // 本节点对外可访问 URL（用于向注册中心报备自身地址）
+  selfUrl: resolveSelfUrl(),
+  // 动态注册中心心跳与拉取间隔（毫秒，默认 60000ms / 60 秒，保护 Cloudflare 免费层级配额）
+  registryIntervalMs: parseInt(process.env.REGISTRY_INTERVAL_MS || '60000', 10),
   nodeRole: parsedNodeRole, // 'master' | 'standby' | 'auto'
   nodePriority: resolveNodePriority(parsedNodeRole), // 默认：master=100, standby=50
   clusterHeartbeatIntervalMs: parseInt(process.env.CLUSTER_HEARTBEAT_INTERVAL_MS || '15000', 10)

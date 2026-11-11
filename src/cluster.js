@@ -116,7 +116,7 @@ export function mergeAuthState(local, incoming) {
 }
 
 /**
- * 规范化对端请求路径，避免配置 PEER_URLS 时末尾自带 /coral 导致出现 /coral/coral 重复前缀
+ * 规范化对端请求路径，避免对端节点 URL 末尾自带 /coral 导致出现 /coral/coral 重复前缀
  */
 function buildPeerEndpoint(baseUrl, pathWithPrefix) {
   let base = (baseUrl || '').trim().replace(/\/+$/, '');
@@ -141,26 +141,20 @@ export class ClusterManager {
     if (this.reminderService) {
       this.reminderService.clusterManager = this;
     }
-    this.peerUrls = Array.isArray(config.peerUrls) ? config.peerUrls : [];
-    this.peerUrl = this.peerUrls[0] || ''; // 向后兼容旧接口与单节点引用
+    this.peerUrls = [];
     this.nodePriority = config.nodePriority;
     // auto 模式初始以 standby 启动，完成选举判定后再晋升，杜绝启动期误以为 Master 产生抢跑广播
     this.role = config.nodeRole === 'master' ? 'master' : 'standby';
 
+    // 动态服务注册与发现中心相关配置
+    this.registryUrl = config.registryUrl;
+    this.selfUrl = config.selfUrl;
+    this.registryTimer = null;
+    this.lastRegistrySync = null;
+    this.lastRegistryError = null;
+
     // 多对端节点运行时状态映射表: url => { url, online, role, priority, lastSeen, isAsleep, failureCount, error }
     this.peersStatus = new Map();
-    for (const url of this.peerUrls) {
-      this.peersStatus.set(url, {
-        url,
-        online: null,
-        role: null,
-        priority: 0,
-        lastSeen: null,
-        failureCount: 0,
-        isAsleep: false,
-        error: null
-      });
-    }
 
     this.failureCount = 0; // 连续未检测到存活 Master 的心跳周期计数
     this.lastHeartbeat = null;
@@ -171,14 +165,144 @@ export class ClusterManager {
   }
 
   /**
+   * 动态更新集群对端节点池 (根据注册中心返回或外部配置)
+   */
+  updatePeers(newPeerUrls) {
+    if (!Array.isArray(newPeerUrls)) return false;
+    const normalized = newPeerUrls
+      .map(u => (u || '').trim().replace(/\/+$/, ''))
+      .filter(u => u.length > 0 && u !== this.selfUrl);
+
+    // 去重
+    const unique = Array.from(new Set(normalized));
+
+    // 比对当前节点集是否发生变化
+    const currentSet = new Set(this.peerUrls);
+    const hasDiff = unique.length !== this.peerUrls.length || unique.some(u => !currentSet.has(u));
+
+    if (!hasDiff) return false;
+
+    console.log(`[Cluster] ⚡ 动态对端节点池更新 (${this.peerUrls.length} -> ${unique.length}): [${unique.join(', ')}]`);
+    this.peerUrls = unique;
+
+    const nextStatus = new Map();
+    for (const url of unique) {
+      if (this.peersStatus.has(url)) {
+        nextStatus.set(url, this.peersStatus.get(url));
+      } else {
+        nextStatus.set(url, {
+          url,
+          online: null,
+          role: null,
+          priority: 0,
+          lastSeen: null,
+          failureCount: 0,
+          isAsleep: false,
+          error: null
+        });
+        console.log(`[Cluster] 发现新加入集群的对端节点: ${url}`);
+      }
+    }
+    this.peersStatus = nextStatus;
+    return true;
+  }
+
+  /**
+   * 与动态注册中心同步：向 Worker 上报本节点并拉取全网活跃对端
+   */
+  async syncWithRegistry() {
+    if (!this.registryUrl) return;
+
+    let endpoint = this.registryUrl.replace(/\/+$/, '');
+    if (!endpoint.includes('/api/registry')) {
+      const prefix = config.routePrefix || '/coral';
+      endpoint = `${endpoint}${prefix}/api/registry`;
+    }
+    if (!endpoint.endsWith('/heartbeat')) {
+      endpoint = `${endpoint}/heartbeat`;
+    }
+
+    const payload = {
+      url: this.selfUrl,
+      priority: this.nodePriority,
+      role: this.role,
+      status: this.iLink ? this.iLink.statusDescription : 'RUNNING',
+      hasContextToken: Boolean(this.iLink?.state?.contextToken),
+      remainingQuota: this.iLink ? this.iLink.remainingQuota : config.maxQuota,
+      timestamp: Date.now()
+    };
+
+    try {
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': config.apiKey
+        },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(6000)
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        this.lastRegistrySync = Date.now();
+        this.lastRegistryError = null;
+
+        if (data && Array.isArray(data.peers)) {
+          const changed = this.updatePeers(data.peers);
+          if (changed && this.peerUrls.length > 0) {
+            // 对端列表发生变动，立即触发一次探测
+            this._probeAllPeers().catch(() => {});
+          }
+        }
+      } else {
+        const text = await res.text().catch(() => '');
+        this.lastRegistryError = `HTTP ${res.status}: ${text.slice(0, 100)}`;
+        console.warn(`[Cluster] 动态注册中心响应异常: ${this.lastRegistryError}`);
+      }
+    } catch (err) {
+      this.lastRegistryError = err.message;
+      console.warn(`[Cluster] 动态注册中心请求失败 (${endpoint}): ${err.message}`);
+    }
+  }
+
+  /**
+   * 启动动态注册中心定期上报与同步回路
+   */
+  startRegistryLoop() {
+    if (this.registryTimer) clearInterval(this.registryTimer);
+    if (!this.registryUrl) return;
+
+    this.registryTimer = setInterval(() => {
+      this.syncWithRegistry().catch(() => {});
+    }, config.registryIntervalMs);
+  }
+
+  /**
    * 初始化多节点集群
    */
   async init() {
+    // 0. 若配置了动态注册中心，启动时首先向注册中心上报自身并获取当前集群活跃节点池
+    if (this.registryUrl) {
+      console.log(`[Cluster] 启用动态服务发现中心: ${this.registryUrl} (自身对外 URL: ${this.selfUrl || '未配置'})`);
+      await this.syncWithRegistry();
+      this.startRegistryLoop();
+    }
+
     if (this.peerUrls.length === 0) {
-      console.log('[Cluster] 未配置 PEER_URLS / PEER_URL，当前服务以独立单机模式运行 (Role: Master)');
-      this.role = 'master';
-      this.startMasterTasks();
+      if (this.registryUrl) {
+        console.log(`[Cluster] 注册中心暂无其它活跃对端，当前节点初始化为 ${config.nodeRole === 'standby' ? 'Standby' : 'Master'}，持续监听注册中心动态节点...`);
+      } else {
+        console.log('[Cluster] 未配置 REGISTRY_URL，当前服务以独立单机模式运行 (Role: Master)');
+      }
+      this.role = config.nodeRole === 'standby' ? 'standby' : 'master';
+      if (this.role === 'master') {
+        this.startMasterTasks();
+      } else {
+        this.stopMasterTasks();
+      }
       this._registerStorageListener();
+      this.startHeartbeatLoop();
       return;
     }
 
@@ -299,6 +423,9 @@ export class ClusterManager {
     if (this.peerUrls.length > 0) {
       this.syncToPeers(this.iLink.state).catch(() => { });
     }
+
+    // 晋升后向注册中心同步最新 Master 角色
+    this.syncWithRegistry().catch(() => { });
   }
 
   /**
@@ -315,6 +442,9 @@ export class ClusterManager {
       await this.syncToPeers(local).catch(() => { });
     }
     await this.pullStateFromPeers(null, false);
+
+    // 降级后向注册中心同步最新 Standby 角色
+    this.syncWithRegistry().catch(() => { });
   }
 
   /**
@@ -411,7 +541,7 @@ export class ClusterManager {
    */
   async pullStateFromPeers(targetUrl = null, throwOnError = false) {
     if (!this.peerUrls.length) {
-      if (throwOnError) throw new Error('未配置 PEER_URLS / PEER_URL 对端节点列表');
+      if (throwOnError) throw new Error('集群中暂无其他可用对端节点');
       return false;
     }
 
@@ -741,14 +871,21 @@ export class ClusterManager {
     const primaryPeer = peersArray[0] || null;
 
     return {
-      isCluster: this.peerUrls.length > 0,
+      isCluster: this.peerUrls.length > 0 || Boolean(this.registryUrl),
       role: this.role,
       priority: this.nodePriority,
       configuredRole: config.nodeRole,
       peers: peersArray,
       peerUrls: this.peerUrls,
-      // 向下兼容单对端字段
-      peerUrl: this.peerUrl || null,
+      // 动态注册中心信息
+      registry: {
+        enabled: Boolean(this.registryUrl),
+        url: this.registryUrl || null,
+        selfUrl: this.selfUrl || null,
+        intervalMs: config.registryIntervalMs,
+        lastSync: this.lastRegistrySync,
+        lastError: this.lastRegistryError
+      },
       peerOnline: peersArray.some(p => p.online),
       peerRole: peersArray.find(p => p.role === 'master')?.role || (primaryPeer?.role || null),
       failureCount: this.failureCount,
@@ -761,12 +898,36 @@ export class ClusterManager {
   }
 
   stop() {
+    if (this.registryTimer) {
+      clearInterval(this.registryTimer);
+      this.registryTimer = null;
+    }
     if (this.heartbeatTimer) {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = null;
     }
     if (this.unsubscribeStorage) {
       this.unsubscribeStorage();
+    }
+    // 优雅退出：尽最大努力通知注册中心下线本节点
+    if (this.registryUrl && this.selfUrl) {
+      try {
+        let endpoint = this.registryUrl.replace(/\/+$/, '');
+        if (!endpoint.includes('/api/registry')) {
+          const prefix = config.routePrefix || '/coral';
+          endpoint = `${endpoint}${prefix}/api/registry`;
+        }
+        endpoint = endpoint.replace(/\/heartbeat\/?$/, '').replace(/\/+$/, '') + '/unregister';
+        fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': config.apiKey
+          },
+          body: JSON.stringify({ url: this.selfUrl }),
+          signal: AbortSignal.timeout(2000)
+        }).catch(() => { });
+      } catch { }
     }
   }
 }

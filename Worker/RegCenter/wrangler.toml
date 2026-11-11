@@ -6,8 +6,9 @@ compatibility_flags = ["nodejs_compat"]
 browser = { binding = "MY_BROWSER" }
 
 # 定时保活探活任务（15 分钟一次，配合智能 HTTP 先探活策略，在线时 0 消耗 Browser Rendering 额度）
-[triggers]
-crons = ["*/15 * * * *"]
+# 已经用其它定时触发无需配置
+# [triggers]
+# crons = ["*/15 * * * *"]
 
 [vars]
 BLITZ_APP_URL = "https://clawbot.coral.blitz.cloud"

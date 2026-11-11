@@ -617,6 +617,8 @@
           Standby (让出权限)</button>
         <button class="btn btn-secondary" onclick="manualPullState()" style="font-size: 12px; padding: 6px 14px;">🔄
           从集群拉取最新凭证</button>
+        <button class="btn btn-secondary" onclick="manualRegistrySync()" style="font-size: 12px; padding: 6px 14px;">🌐
+          动态注册中心同步</button>
       </div>
       <div id="clusterFeedback" class="feedback-msg"></div>
     </div>
@@ -766,7 +768,12 @@
           } else {
             document.getElementById('valClusterHealth').innerHTML = '<span style="color:#f87171;">▲ 报警 (无活跃 Master，选举中)</span>';
           }
-          document.getElementById('valClusterPeerCount').innerText = (peers.length + 1) + ' 节点集群 (本节点 + ' + peers.length + ' 备用)';
+          let peerCountText = (peers.length + 1) + ' 节点集群 (本节点 + ' + peers.length + ' 备用)';
+          if (c.registry && c.registry.enabled) {
+            peerCountText += ' · 🌐 动态发现';
+            document.getElementById('clusterStatusText').innerText = '动态注册发现 · 跨云热备';
+          }
+          document.getElementById('valClusterPeerCount').innerText = peerCountText;
 
           // 渲染对端节点列表
           const peersListEl = document.getElementById('valClusterPeersList');
@@ -1257,6 +1264,24 @@
         }
       } catch (err) {
         alert('拉取失败: ' + err.message);
+      }
+    }
+
+    async function manualRegistrySync() {
+      try {
+        const res = await fetch(PREFIX + '/api/cluster/registry-sync', {
+          method: 'POST',
+          headers: { 'X-API-Key': apiKey }
+        });
+        const data = await res.json();
+        if (data.success) {
+          alert('✓ ' + (data.message || '已成功与动态注册中心同步！'));
+          checkState();
+        } else {
+          alert('注册中心同步失败: ' + (data.error || '未知错误'));
+        }
+      } catch (err) {
+        alert('请求失败: ' + err.message);
       }
     }
 

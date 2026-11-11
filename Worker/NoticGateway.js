@@ -44,13 +44,17 @@ const DEFAULT_CONFIG = {
     // 接口规范: POST <CORAL_WEBHOOK_URL>/coral/api/send
     // Headers: x-api-key: <CORAL_API_KEY>
     // Body: {"title":"...","text":"...","immediate":false}
-    CORAL_WEBHOOK_URL: "",          // Coral Webhook 地址 (例如: https://your-server.com/coral/api/send 或基地址)
+    // 智能模式：直接在 CORAL_WEBHOOK_URL 中填入：
+    // - RegCenter 注册中心地址 (例如: https://your-regcenter.workers.dev/coral/api/registry/nodes) -> 自动寻 Master 推送，故障毫秒级热切 Standby；
+    // - 或 RegCenter 推送代理 (例如: https://your-regcenter.workers.dev/coral/api/send) -> 由注册中心代理负责透明转发与容灾；
+    // - 或 单个/逗号分隔的多个容器节点地址 (例如: https://node1.com,https://node2.com) -> 依次尝试直至发送成功。
+    CORAL_WEBHOOK_URL: "",          // Coral Webhook 或注册中心地址
     CORAL_API_KEY: "",              // 接口鉴权密钥 (通过 Header: x-api-key 传递)
     CORAL_DEFAULT_TITLE: "通知提醒", // 默认标题 (若未单独指定 title 且无法从正文提取时使用)
     CORAL_IMMEDIATE: false,         // 是否即时加急 (默认 false)
 
     // --- Coral 2 自定义通知渠道配置 (实例 2，共用同一套底层接口逻辑) ---
-    CORAL2_WEBHOOK_URL: "",         // Coral 2 Webhook 地址 (例如: https://your-server-2.com/coral/api/send 或基地址)
+    CORAL2_WEBHOOK_URL: "",         // Coral 2 Webhook 或注册中心地址
     CORAL2_API_KEY: "",             // 接口鉴权密钥 (通过 Header: x-api-key 传递)
     CORAL2_DEFAULT_TITLE: "通知提醒",// 默认标题
     CORAL2_IMMEDIATE: false,        // 是否即时加急 (默认 false)
@@ -938,11 +942,100 @@ async function sendWxPusher({ text, photo, parseMode, chatId, cfg, requestUrl, t
     return resJson;
 }
 
+// 注册中心节点动态发现内存缓存 (30 秒防抖，保护 Cloudflare 免费配额)
+let coralRegistryNodesCache = null;
+let lastCoralRegistryFetchTime = 0;
+
+async function fetchCoralCandidatesFromRegistry(registryUrl) {
+    if (!registryUrl) return [];
+    const now = Date.now();
+    if (coralRegistryNodesCache && now - lastCoralRegistryFetchTime < 30000) {
+        return coralRegistryNodesCache;
+    }
+
+    try {
+        let endpoint = registryUrl.trim().replace(/\/+$/, '');
+        if (!endpoint.includes('/api/registry') && !endpoint.includes('/redis/get/')) {
+            endpoint = `${endpoint}/coral/api/registry/nodes`;
+        }
+
+        const res = await fetch(endpoint, { signal: AbortSignal.timeout(4000) });
+        if (res.ok) {
+            const data = await res.json();
+            let rawList = [];
+            if (Array.isArray(data)) rawList = data;
+            else if (Array.isArray(data.nodes)) rawList = data.nodes;
+            else if (data.value) {
+                let parsed = typeof data.value === 'string' ? JSON.parse(data.value) : data.value;
+                if (typeof parsed === 'string') {
+                    try { parsed = JSON.parse(parsed); } catch { }
+                }
+                if (Array.isArray(parsed)) rawList = parsed;
+            }
+
+            if (rawList.length > 0) {
+                // 仅筛选 3 分钟内活跃上报的节点
+                const alive = rawList.filter(n => n && n.url && (now - (n.lastSeen || 0) < 180000));
+                // Master 节点排首位，其余按 priority 权重降序排列
+                alive.sort((a, b) => {
+                    const aMaster = a.role === 'master' ? 1 : 0;
+                    const bMaster = b.role === 'master' ? 1 : 0;
+                    if (aMaster !== bMaster) return bMaster - aMaster;
+                    return (b.priority || 0) - (a.priority || 0);
+                });
+
+                coralRegistryNodesCache = alive.map(n => n.url);
+                lastCoralRegistryFetchTime = now;
+                return coralRegistryNodesCache;
+            }
+        }
+    } catch (err) {
+        console.warn(`[Coral Registry] 动态拉取节点池告警: ${err.message}`);
+    }
+
+    return coralRegistryNodesCache || [];
+}
+
+/**
+ * 从配置的 WEBHOOK_URL 智能解析候选发送节点：
+ * 1. 若填入的是注册中心地址（包含 /registry、/nodes 或 /redis/get/）：自动获取当前存活的 Master 节点为第一候选，Standby 备机随后；
+ * 2. 若填入的是逗号分隔的多个地址：依次作为备选；
+ * 3. 若填入的是单个普通地址：直接作为唯一候选。
+ */
+async function resolveCoralEndpoints(rawUrl) {
+    if (!rawUrl) return [];
+    const trimmed = rawUrl.trim();
+
+    // 智能识别注册中心地址
+    const isRegistry = trimmed.includes('/registry') || trimmed.includes('/nodes') || trimmed.includes('/redis/get/');
+    if (isRegistry) {
+        const dynamicNodes = await fetchCoralCandidatesFromRegistry(trimmed);
+        if (dynamicNodes.length > 0) {
+            return dynamicNodes.map(u => {
+                if (!u.includes('/coral/api/send') && !u.includes('/api/send')) {
+                    return u.replace(/\/+$/, '') + '/coral/api/send';
+                }
+                return u;
+            });
+        }
+    }
+
+    // 逗号分隔多地址或单地址
+    const urls = trimmed.split(',').map(u => u.trim()).filter(Boolean);
+    return urls.map(u => {
+        if (!u.includes('/coral/api/send') && !u.includes('/api/send')) {
+            return u.replace(/\/+$/, '') + '/coral/api/send';
+        }
+        return u;
+    });
+}
+
 /**
  * 6. Coral 协议通用适配器核心实现 (供 coral 与 coral2 等多实例共享一套代码，杜绝冗余)
- * 接口规范: POST <WEBHOOK_URL>/coral/api/send
- * Headers: x-api-key: <API_KEY>
- * Payload: {"title":"...","text":"...","immediate":false}
+ * 支持智能解析注册中心 / 单机 / 多机热切：
+ * 1. 直接由 CORAL_WEBHOOK_URL 读取配置，自动判断是否为注册中心；
+ * 2. 若为注册中心，自动定位 Master 节点为首要目标，并在 502/超时时毫秒级热切 Standby；
+ * 3. 若为单机或多机，依次尝试直到发送成功。
  */
 async function sendCoralCompatible({
     serviceName = "Coral",
@@ -959,9 +1052,9 @@ async function sendCoralCompatible({
         throw new Error(`${serviceName}_WEBHOOK_URL is not configured (neither in URL params nor in env)`);
     }
 
-    // 智能处理 URL：若用户仅填了域名或根路径，自动追加 /coral/api/send
-    if (!webhookUrl.includes("/coral/api/send")) {
-        webhookUrl = webhookUrl.replace(/\/+$/, "") + "/coral/api/send";
+    const candidateUrls = await resolveCoralEndpoints(webhookUrl);
+    if (candidateUrls.length === 0) {
+        throw new Error(`${serviceName}_WEBHOOK_URL 未配置有效的目标地址`);
     }
 
     // 1. 提取标题 (title)
@@ -1033,35 +1126,43 @@ async function sendCoralCompatible({
         payload.url = photo;
     }
 
-    // 4. 发送 HTTP POST 请求 (如遇 5xx 服务器临时故障进行最多 1 次重试)
-    let response;
-    for (let attempt = 1; attempt <= 2; attempt++) {
+    // 4. 多节点故障转移发送：依次尝试候选节点（优先 Master，遇 5xx/超时自动尝试 Standby 备机）
+    let lastError = null;
+    let resJson = null;
+
+    for (let i = 0; i < candidateUrls.length; i++) {
+        const targetUrl = candidateUrls[i];
         try {
-            response = await fetch(webhookUrl, {
+            const response = await fetch(targetUrl, {
                 method: "POST",
                 headers: headers,
-                body: JSON.stringify(payload)
+                body: JSON.stringify(payload),
+                signal: AbortSignal.timeout(6000)
             });
 
-            if (response.status >= 500 && attempt === 1) {
-                await new Promise(r => setTimeout(r, 500));
-                continue;
+            if (response.ok) {
+                resJson = await parseSafeJson(response, serviceName);
+                if (i > 0) {
+                    console.log(`[Coral Failover] ✓ 主节点异常，已成功通过备选节点 (${targetUrl}) 完成推送`);
+                }
+                return resJson;
             }
-            break;
+
+            const errJson = await parseSafeJson(response, serviceName).catch(() => ({}));
+            const errDetail = errJson.error || errJson.message || `HTTP ${response.status}`;
+            lastError = new Error(`${serviceName} 节点 [${targetUrl}] 异常: ${errDetail}`);
+            console.warn(`[Coral] 候选节点 ${i + 1}/${candidateUrls.length} [${targetUrl}] 响应异常: ${errDetail}`);
         } catch (fetchErr) {
-            if (attempt === 1) {
-                await new Promise(r => setTimeout(r, 500));
-                continue;
-            }
-            throw new Error(`${serviceName} 网络请求失败: ${fetchErr.message}`);
+            lastError = new Error(`${serviceName} 节点 [${targetUrl}] 连接失败: ${fetchErr.message}`);
+            console.warn(`[Coral] 候选节点 ${i + 1}/${candidateUrls.length} [${targetUrl}] 网络失败: ${fetchErr.message}`);
+        }
+
+        if (i < candidateUrls.length - 1) {
+            console.warn(`[Coral Failover] ⚡ 正在自动重试下一候选备用节点 (${candidateUrls[i + 1]})...`);
         }
     }
 
-    const resJson = await parseSafeJson(response, serviceName);
-    if (!response.ok) {
-        throw new Error(`${serviceName} API Error [HTTP ${response.status}]: ${JSON.stringify(resJson)}`);
-    }
-    return resJson;
+    throw lastError || new Error(`${serviceName} 所有集群节点均无响应或发送失败`);
 }
 
 /**
@@ -1552,10 +1653,10 @@ function renderDashboard(request, env, user) {
             <td><strong style="color: #f59e0b;">${cfg.FALLBACK_CHANNELS || "未设置"}</strong></td>
           </tr>
           <tr>
-            <td>Coral Webhook 地址</td>
+            <td>Coral 发送目标 (CORAL_WEBHOOK_URL)</td>
             <td>
               <span class="status-tag ${cfg.CORAL_WEBHOOK_URL ? "tag-ok" : "tag-empty"}">
-                ${cfg.CORAL_WEBHOOK_URL ? "已配置" : "未配置"}
+                ${cfg.CORAL_WEBHOOK_URL ? (cfg.CORAL_WEBHOOK_URL.includes('/registry') || cfg.CORAL_WEBHOOK_URL.includes('/nodes') || cfg.CORAL_WEBHOOK_URL.includes('/redis/') ? "已配置 (注册中心智能寻址: 主节点优先 + 备机自动热切)" : "已配置 (直连/代理节点)") : "未配置"}
               </span>
             </td>
           </tr>

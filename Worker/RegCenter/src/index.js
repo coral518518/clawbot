@@ -585,7 +585,8 @@ export async function fetch(req, env, ctx) {
     };
 
     // 1. 动态服务注册与心跳接口: POST /coral/api/registry/heartbeat 或 POST /api/registry/heartbeat
-    if ((pathname === `${prefix}/api/registry/heartbeat` || pathname === '/api/registry/heartbeat') && req.method === 'POST') {
+    if ((pathname === `${prefix}/api/registry/heartbeat` || pathname === '/api/registry/heartbeat' ||
+        pathname === `${prefix}/heartbeat` || pathname === '/heartbeat') && req.method === 'POST') {
         if (!isAuthorized()) {
             return new Response(JSON.stringify({ success: false, error: 'Unauthorized: invalid API key' }), {
                 status: 401,
@@ -681,7 +682,98 @@ export async function fetch(req, env, ctx) {
         return new Response(JSON.stringify({ success: true, message: 'Node unregistered successfully' }), { headers: corsHeaders });
     }
 
-    // 5. 手动触发保活接口 (/trigger 或 /coral/trigger)
+    // 5. 核心高可用透明推送网关代理：POST /coral/api/send 或 POST /api/send (兼顾 GET /api/send)
+    // 供 NoticGateway 或外部监控直接对接：自动路由至当前存活的 Master 节点；若 Master 502/休眠，毫秒级热切 Standby！
+    if (pathname === `${prefix}/api/send` || pathname === '/api/send') {
+        if (!isAuthorized()) {
+            return new Response(JSON.stringify({ success: false, error: 'Unauthorized: invalid API key' }), {
+                status: 401,
+                headers: corsHeaders
+            });
+        }
+
+        const registeredNodes = await getRegistryNodes(env);
+        // 按 Master 优先、权重降序排列
+        const candidates = [...registeredNodes];
+        candidates.sort((a, b) => {
+            const aMaster = a.role === 'master' ? 1 : 0;
+            const bMaster = b.role === 'master' ? 1 : 0;
+            if (aMaster !== bMaster) return bMaster - aMaster;
+            return (b.priority || 0) - (a.priority || 0);
+        });
+
+        const targetUrls = candidates.map(c => c.url).filter(Boolean);
+        if (targetUrls.length === 0 && env.BLITZ_APP_URL) {
+            targetUrls.push(env.BLITZ_APP_URL);
+        }
+
+        if (targetUrls.length === 0) {
+            return new Response(JSON.stringify({
+                success: false,
+                error: '集群中暂无已注册的在线节点，无法转发发送通知'
+            }), { status: 503, headers: corsHeaders });
+        }
+
+        const rawBody = (req.method === 'POST' || req.method === 'PUT') ? await req.text().catch(() => '') : null;
+        const forwardHeaders = new Headers(req.headers);
+        forwardHeaders.delete('host');
+        forwardHeaders.delete('cf-connecting-ip');
+        forwardHeaders.delete('cf-ray');
+
+        let lastRes = null;
+        let lastError = null;
+
+        for (let i = 0; i < targetUrls.length; i++) {
+            const baseNodeUrl = targetUrls[i].replace(/\/+$/, '');
+            const targetSendUrl = `${baseNodeUrl}${prefix}/api/send${url.search}`;
+
+            try {
+                const proxyRes = await fetch(targetSendUrl, {
+                    method: req.method,
+                    headers: forwardHeaders,
+                    body: rawBody,
+                    signal: AbortSignal.timeout(6000)
+                });
+
+                if (proxyRes.ok) {
+                    const resData = await proxyRes.text();
+                    return new Response(resData, {
+                        status: proxyRes.status,
+                        headers: {
+                            'Content-Type': proxyRes.headers.get('content-type') || 'application/json',
+                            'x-dispatched-node': baseNodeUrl,
+                            'x-failover-attempt': String(i + 1)
+                        }
+                    });
+                }
+
+                console.warn(`[Proxy Send] 候选节点 ${i + 1}/${targetUrls.length} (${baseNodeUrl}) 返回 HTTP ${proxyRes.status}，自动尝试下一备用节点...`);
+                // 后台异步触发一次唤醒
+                if (ctx && typeof ctx.waitUntil === 'function') {
+                    ctx.waitUntil(smartKeepAlive(baseNodeUrl, env));
+                }
+                lastRes = proxyRes;
+            } catch (err) {
+                console.warn(`[Proxy Send] 候选节点 ${i + 1}/${targetUrls.length} (${baseNodeUrl}) 连接异常 (${err.message})，自动尝试下一备用节点...`);
+                lastError = err;
+            }
+        }
+
+        if (lastRes) {
+            const errText = await lastRes.text().catch(() => '');
+            return new Response(errText || JSON.stringify({ success: false, error: `所有节点转发均异常 (HTTP ${lastRes.status})` }), {
+                status: lastRes.status,
+                headers: corsHeaders
+            });
+        }
+
+        return new Response(JSON.stringify({
+            success: false,
+            error: `集群所有节点转发失败: ${lastError ? lastError.message : '未知网络错误'}`
+        }), { status: 502, headers: corsHeaders });
+    }
+
+    // 6. 手动触发保活接口 (/trigger 或 /coral/trigger)
     if (pathname === '/trigger' || pathname === `${prefix}/trigger`) {
         if (!isConfigured) {
             return new Response(JSON.stringify({
@@ -843,7 +935,7 @@ export async function fetch(req, env, ctx) {
         </div>
 
         <div class="tips">
-            💡 <strong>免手动修改 PEER_URLS 指南：</strong><br>
+            💡 <strong>极简部署指南：</strong><br>
             • 在新云平台部署时，仅需添加 <code>REGISTRY_URL=${url.origin}${prefix}/api/registry</code> 与 <code>SELF_URL=https://当前节点网址</code>。<br>
             • 其他所有现有容器将在 60 秒内通过注册中心全自动发现新节点并完成热备组网，零人工配置！
         </div>

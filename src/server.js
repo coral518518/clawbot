@@ -402,6 +402,23 @@ router.post('/api/cluster/demote', requireApiKey, async (req, res) => {
   res.json({ success: true, role: clusterManager.role, message: '已手动降级为 Standby' });
 });
 
+// 手动与动态服务注册中心立即同步一次
+router.post('/api/cluster/registry-sync', requireApiKey, async (req, res) => {
+  try {
+    if (!clusterManager.registryUrl) {
+      return res.status(400).json({ success: false, error: '当前节点未配置 REGISTRY_URL，无法使用动态注册中心' });
+    }
+    await clusterManager.syncWithRegistry();
+    res.json({
+      success: true,
+      message: '已成功与动态注册中心同步并刷新对端节点列表',
+      cluster: clusterManager.getStatus()
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // 5. 渲染管理页面（读取独立 html 模板，彻底规避模板转义与 Cloudflare 脚本语法错误）
 function getAdminHtml() {
   const htmlTpl = fs.readFileSync(adminHtmlPath, 'utf-8');

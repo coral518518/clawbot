@@ -4,6 +4,15 @@ compatibility_date = "2026-01-01"
 compatibility_flags = ["nodejs_compat"]
 
 browser = { binding = "MY_BROWSER" }
+workers_dev = false
+
+[observability.logs]
+enabled = true
+invocation_logs = true
+
+[[services]]
+binding = "D1_SERVICE"
+service = "d1"
 
 # 定时保活探活任务（15 分钟一次，配合智能 HTTP 先探活策略，在线时 0 消耗 Browser Rendering 额度）
 # 已经用其它定时触发无需配置

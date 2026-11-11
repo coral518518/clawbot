@@ -974,17 +974,19 @@ async function fetchCoralCandidatesFromRegistry(registryUrl) {
             }
 
             if (rawList.length > 0) {
-                // 仅筛选 3 分钟内活跃上报的节点
+                // 优先筛选 3 分钟内活跃上报的节点；若全处于休眠期，则保留全部注册节点尝试请求唤醒
                 const alive = rawList.filter(n => n && n.url && (now - (n.lastSeen || 0) < 180000));
+                const candidates = alive.length > 0 ? alive : rawList.filter(n => n && n.url);
+
                 // Master 节点排首位，其余按 priority 权重降序排列
-                alive.sort((a, b) => {
+                candidates.sort((a, b) => {
                     const aMaster = a.role === 'master' ? 1 : 0;
                     const bMaster = b.role === 'master' ? 1 : 0;
                     if (aMaster !== bMaster) return bMaster - aMaster;
                     return (b.priority || 0) - (a.priority || 0);
                 });
 
-                coralRegistryNodesCache = alive.map(n => n.url);
+                coralRegistryNodesCache = candidates.map(n => n.url);
                 lastCoralRegistryFetchTime = now;
                 return coralRegistryNodesCache;
             }

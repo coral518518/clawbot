@@ -1,6 +1,13 @@
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
+import service from './service.mjs';
+
+// 输入文档在进程启动时由平台写入（bootstrap 先于应用入口执行），模块加载时读取一次。
+const serviceInput = service.input();
+
+// 服务输入中的密钥以脱敏箱（SecretString）承载，expose() 是取值的唯一入口
+const inputApiKey = typeof serviceInput.apiKey === 'string' ? serviceInput.apiKey : serviceInput.apiKey.expose();
 
 // 尝试加载根目录下的 .env 文件（Node.js >= 20.6.0 原生支持）
 try {
@@ -78,11 +85,12 @@ function resolveNodePriority(role) {
 const parsedNodeRole = (process.env.NODE_ROLE || 'auto').trim().toLowerCase();
 
 export const config = {
-  port: parseInt(process.env.PORT || '5000', 10),
+  // Compute 预留端口（平台同时以 PORT 变量导出）
+  port: service.port(),
   // 基础访问前缀：默认 /coral，所有外部接口和管理页面均在此前缀下
   routePrefix: normalizePrefix(process.env.ROUTE_PREFIX || '/coral'),
-  // 外部调用 /api/send 和管理接口所需的固定密钥
-  apiKey: process.env.API_KEY || 'default-secret-change-me',
+  // 外部调用 /api/send 和管理接口所需的固定密钥（服务输入，由 module.mjs 以 envSecret 绑定）
+  apiKey: inputApiKey,
   // 持久化存储路径（已包含自动回退保护）
   dataDir: resolveDataDir(),
   ilinkBaseUrl: process.env.ILINK_BASE_URL || 'https://ilinkai.weixin.qq.com',
@@ -140,8 +148,4 @@ export function saveTriggerConfig(url, key) {
   } catch (err) {
     console.error('[Config] 保存 trigger_config.json 失败:', err.message);
   }
-}
-
-if (config.apiKey === 'default-secret-change-me' && process.env.NODE_ENV === 'production') {
-  console.warn('[SECURITY WARNING] 正在使用默认 API_KEY，请在环境变量或 .env 中设置独立高强度密钥！');
 }

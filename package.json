@@ -6,7 +6,8 @@
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
-    "dev": "node --watch src/server.js"
+    "dev": "node --watch src/server.js",
+    "build": "node scripts/build.mjs"
   },
   "keywords": [
     "wechat",
@@ -18,8 +19,23 @@
   "author": "coral518518",
   "license": "MIT",
   "dependencies": {
+    "@prisma/composer": "0.38.0",
+    "@prisma/composer-prisma-cloud": "0.38.0",
+    "@prisma/orm-postgres": "8.0.0-rc.23",
+    "arktype": "^2.1.25",
+    "effect": "4.0.5",
     "express": "^4.21.2",
     "express-rate-limit": "^7.5.0"
+  },
+  "devDependencies": {
+    "prisma": "8.0.0-rc.33"
+  },
+  "overrides": {
+    "effect": "4.0.5",
+    "@effect/vitest": "4.0.5",
+    "@effect/platform-bun": "4.0.5",
+    "@effect/platform-node": "4.0.5",
+    "@effect/platform-node-shared": "4.0.5"
   },
   "engines": {
     "node": ">=18.0.0"

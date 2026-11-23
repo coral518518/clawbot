@@ -1,6 +1,9 @@
 # 依赖
 node_modules/
 
+# 构建产物
+dist/
+
 # 本地环境变量与私钥
 .env
 .env.local
@@ -19,3 +22,5 @@ yarn-error.log*
 .vscode/
 .idea/
 .agents
+.prisma-composer/
+.alchemy/

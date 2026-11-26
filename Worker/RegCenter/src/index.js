@@ -592,7 +592,7 @@ export async function scheduled(event, env, ctx) {
     }
 }
 
-export async function fetch(req, env, ctx) {
+async function handleFetch(req, env, ctx) {
     const url = new URL(req.url);
     const pathname = url.pathname.replace(/\/+$/, '') || '/';
     const targetUrl = env.BLITZ_APP_URL || 'https://clawbot.coral.blitz.cloud';
@@ -744,9 +744,12 @@ export async function fetch(req, env, ctx) {
         }
 
         const registeredNodes = await getRegistryNodes(env);
-        // 按 Master 优先、权重降序排列
+        // 优先在线节点，其次 Master 角色，最后按权重降序排列（避免先请求已离线超 3 分钟的节点白等 6s 超时）
         const candidates = [...registeredNodes];
         candidates.sort((a, b) => {
+            const aOnline = a.isOnline ? 1 : 0;
+            const bOnline = b.isOnline ? 1 : 0;
+            if (aOnline !== bOnline) return bOnline - aOnline;
             const aMaster = a.role === 'master' ? 1 : 0;
             const bMaster = b.role === 'master' ? 1 : 0;
             if (aMaster !== bMaster) return bMaster - aMaster;
@@ -786,7 +789,8 @@ export async function fetch(req, env, ctx) {
                     signal: AbortSignal.timeout(6000)
                 });
 
-                if (proxyRes.ok) {
+                const isClientError = proxyRes.status === 400 || proxyRes.status === 401 || proxyRes.status === 403 || proxyRes.status === 429;
+                if (proxyRes.ok || isClientError) {
                     const resData = await proxyRes.text();
                     return new Response(resData, {
                         status: proxyRes.status,
@@ -1021,5 +1025,5 @@ export async function fetch(req, env, ctx) {
 
 export default {
     scheduled,
-    fetch,
+    fetch: handleFetch,
 };

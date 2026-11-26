@@ -1,3 +1,4 @@
+import os from 'os';
 import { config } from './config.js';
 import { storage } from './storage.js';
 
@@ -17,96 +18,120 @@ export function mergeAuthState(local, incoming) {
   if (!incoming || typeof incoming !== 'object') return local;
   if (!local || typeof local !== 'object') return { ...incoming };
 
-  // 1. 若用户显式注销登录，允许清空凭证
+  const incomingTime = Number(incoming.updatedAt || incoming.lastActiveTime || 0);
+  const localTime = Number(local.updatedAt || local.lastActiveTime || 0);
+
+  // 1. 若用户显式注销登录，仅当时间戳不旧于本地状态时才清空凭证，防止历史注销包抹除新登录
   if (incoming.isExplicitLogout) {
-    return { ...incoming };
+    if (!local.botToken || incomingTime >= localTime) {
+      return { ...incoming };
+    }
+    console.warn('[Cluster] 拦截到陈旧的注销同步请求，保留本地较新的有效凭证');
+    return local;
   }
 
   const result = { ...local };
   const incomingHasToken = Boolean(incoming.botToken);
   const localHasToken = Boolean(local.botToken);
+  const localRevokedAt = Number(local.tokenRevokedAt || (local.isExplicitLogout ? localTime : 0));
+  const incomingRevokedAt = Number(incoming.tokenRevokedAt || 0);
 
-  const incomingTime = Number(incoming.updatedAt || incoming.lastActiveTime || 0);
-  const localTime = Number(local.updatedAt || local.lastActiveTime || 0);
-
-  // 2. 账号凭据合并 (botToken, botId, userId)
+  // 2. 账号凭据合并 (botToken, botId, userId, 失效吊销标记)
   if (incomingHasToken) {
     if (!localHasToken || incoming.botToken !== local.botToken) {
-      // 扫码换绑了新 Bot 或本地原本无 Token：比对时间戳采纳最新
-      if (!localHasToken || incomingTime >= localTime) {
+      // 扫码换绑了新 Bot 或本地原本无 Token：比对时间戳，并拒绝复活早于本地吊销/注销时间的旧 Token
+      const canAccept = localHasToken
+        ? incomingTime >= localTime
+        : incomingTime >= localRevokedAt;
+
+      if (canAccept) {
         result.botToken = incoming.botToken;
         result.botId = incoming.botId;
         result.userId = incoming.userId;
         result.userWechatId = incoming.userWechatId || incoming.userId;
+        delete result.isExplicitLogout;
+        delete result.tokenRevokedAt;
+      } else {
+        console.warn('[Cluster] 拦截到早于本地凭证失效时间的旧 Token，拒绝复活已失效凭据');
       }
+    }
+  } else if (incomingRevokedAt && incomingRevokedAt >= localTime) {
+    // 微信返回 -14 / 401 确认凭证失效：同步清空本地旧凭据并保留失效标记，防止主备切换后旧 Token 死灰复燃
+    result.botToken = null;
+    result.contextToken = null;
+    result.tokenRevokedAt = incomingRevokedAt;
+    if (incoming.invalidationReason !== undefined) {
+      result.invalidationReason = incoming.invalidationReason;
     }
   } else if (localHasToken) {
     console.warn('[Cluster] 拦截到对端空凭证同步请求，本地有效微信凭证已受保护，拒绝抹除！');
   }
 
-  // 3. 会话凭据与配额合并 (contextToken & contextTokenUsedCount)
-  const incomingHasCtx = Boolean(incoming.contextToken);
-  const localHasCtx = Boolean(local.contextToken);
+  // 3. 会话凭据与配额合并 (contextToken & contextTokenUsedCount，仅在有效 botToken 存在时合并)
+  if (result.botToken) {
+    const incomingHasCtx = Boolean(incoming.contextToken);
+    const localHasCtx = Boolean(local.contextToken);
 
-  if (incomingHasCtx && localHasCtx && incoming.contextToken === local.contextToken) {
-    // 【关键场景 A】：两端持有同一个会话 Token（常规运行发消息扣配额）
-    // 配额已用条数严格单调递增！谁用得多说明谁发了更多通知，绝对不能被旧快照倒退！
-    const localUsed = Number(local.contextTokenUsedCount || 0);
-    const incomingUsed = Number(incoming.contextTokenUsedCount || 0);
-    const maxUsed = Math.max(localUsed, incomingUsed);
-    result.contextTokenUsedCount = maxUsed;
+    if (incomingHasCtx && localHasCtx && incoming.contextToken === local.contextToken) {
+      // 【关键场景 A】：两端持有同一个会话 Token（常规运行发消息扣配额）
+      // 配额已用条数严格单调递增！谁用得多说明谁发了更多通知，绝对不能被旧快照倒退！
+      const localUsed = Number(local.contextTokenUsedCount || 0);
+      const incomingUsed = Number(incoming.contextTokenUsedCount || 0);
+      const maxUsed = Math.max(localUsed, incomingUsed);
+      result.contextTokenUsedCount = maxUsed;
 
-    // 保留正确的创建时间与到期时间
-    result.contextTokenCreatedAt = local.contextTokenCreatedAt || incoming.contextTokenCreatedAt;
-    result.contextTokenExpireAt = local.contextTokenExpireAt || incoming.contextTokenExpireAt;
+      // 保留正确的创建时间与到期时间
+      result.contextTokenCreatedAt = local.contextTokenCreatedAt || incoming.contextTokenCreatedAt;
+      result.contextTokenExpireAt = local.contextTokenExpireAt || incoming.contextTokenExpireAt;
 
-    // 活跃时间取较晚者
-    result.lastActiveTime = Math.max(Number(local.lastActiveTime || 0), Number(incoming.lastActiveTime || 0));
+      // 活跃时间取较晚者
+      result.lastActiveTime = Math.max(Number(local.lastActiveTime || 0), Number(incoming.lastActiveTime || 0));
 
-    // 提醒与 Webhook 触发状态：只要任一方已触发过，合并后保持已触发
-    if (local.reminderSentToken === result.contextToken || incoming.reminderSentToken === result.contextToken) {
-      result.reminderSentToken = result.contextToken;
-      result.reminderSentAt = local.reminderSentAt || incoming.reminderSentAt || Date.now();
-    }
-    if (local.webhookTriggeredToken === result.contextToken || incoming.webhookTriggeredToken === result.contextToken) {
-      result.webhookTriggeredToken = result.contextToken;
-      result.webhookTriggeredAt = local.webhookTriggeredAt || incoming.webhookTriggeredAt || Date.now();
-      result.webhookLastStatus = local.webhookLastStatus || incoming.webhookLastStatus || 200;
-    }
+      // 提醒与 Webhook 触发状态：只要任一方已触发过，合并后保持已触发
+      if (local.reminderSentToken === result.contextToken || incoming.reminderSentToken === result.contextToken) {
+        result.reminderSentToken = result.contextToken;
+        result.reminderSentAt = local.reminderSentAt || incoming.reminderSentAt || Date.now();
+      }
+      if (local.webhookTriggeredToken === result.contextToken || incoming.webhookTriggeredToken === result.contextToken) {
+        result.webhookTriggeredToken = result.contextToken;
+        result.webhookTriggeredAt = local.webhookTriggeredAt || incoming.webhookTriggeredAt || Date.now();
+        result.webhookLastStatus = local.webhookLastStatus || incoming.webhookLastStatus || 200;
+      }
 
-    // 游标取非空且较长者（通常代表收到了更多微信消息）
-    if (incoming.syncBuf && (!result.syncBuf || incomingTime >= localTime)) {
-      result.syncBuf = incoming.syncBuf;
-    }
+      // 游标取非空且较长者（通常代表收到了更多微信消息）
+      if (incoming.syncBuf && (!result.syncBuf || incomingTime >= localTime)) {
+        result.syncBuf = incoming.syncBuf;
+      }
 
-    // 失效原因更新
-    if (maxUsed >= config.maxQuota) {
-      result.invalidationReason = `本轮 ${config.maxQuota} 条推送配额已全部用完，状态已自动流转为 WAITING_CONTEXT，请在微信回复任意内容恢复`;
-    } else if (incomingTime >= localTime && incoming.invalidationReason !== undefined) {
-      result.invalidationReason = incoming.invalidationReason;
-    }
-  } else if (incomingHasCtx) {
-    // 【场景 B】：对端拥有不同（更新）的会话 Token，或者本地本来没有会话
-    const incomingCreatedAt = Number(incoming.contextTokenCreatedAt || incomingTime);
-    const localCreatedAt = Number(local.contextTokenCreatedAt || localTime);
+      // 失效原因更新
+      if (maxUsed >= config.maxQuota) {
+        result.invalidationReason = `本轮 ${config.maxQuota} 条推送配额已全部用完，状态已自动流转为 WAITING_CONTEXT，请在微信回复任意内容恢复`;
+      } else if (incomingTime >= localTime && incoming.invalidationReason !== undefined) {
+        result.invalidationReason = incoming.invalidationReason;
+      }
+    } else if (incomingHasCtx) {
+      // 【场景 B】：对端拥有不同（更新）的会话 Token，或者本地本来没有会话
+      const incomingCreatedAt = Number(incoming.contextTokenCreatedAt || incomingTime);
+      const localCreatedAt = Number(local.contextTokenCreatedAt || localTime);
 
-    if (!localHasCtx || incomingCreatedAt >= localCreatedAt) {
-      // 对端捕获到了用户更新的微信回复，全面采纳新会话！
-      result.contextToken = incoming.contextToken;
-      result.contextTokenUsedCount = Number(incoming.contextTokenUsedCount || 0);
-      result.contextTokenCreatedAt = incoming.contextTokenCreatedAt || Date.now();
-      result.contextTokenExpireAt = incoming.contextTokenExpireAt || (Date.now() + 24 * 3600 * 1000);
-      result.syncBuf = incoming.syncBuf || result.syncBuf;
-      result.lastActiveTime = incoming.lastActiveTime || Date.now();
-      result.reminderSentToken = incoming.reminderSentToken || null;
-      result.reminderSentAt = incoming.reminderSentAt || null;
-      result.webhookTriggeredToken = incoming.webhookTriggeredToken || null;
-      result.webhookTriggeredAt = incoming.webhookTriggeredAt || null;
-      result.webhookLastStatus = incoming.webhookLastStatus || null;
-      result.webhookLastError = incoming.webhookLastError || null;
-      result.invalidationReason = incoming.invalidationReason || null;
-    } else {
-      console.log('[Cluster] 本地持有的会话比对端传入的会话更新，保留本地会话凭据');
+      if (!localHasCtx || incomingCreatedAt >= localCreatedAt) {
+        // 对端捕获到了用户更新的微信回复，全面采纳新会话！
+        result.contextToken = incoming.contextToken;
+        result.contextTokenUsedCount = Number(incoming.contextTokenUsedCount || 0);
+        result.contextTokenCreatedAt = incoming.contextTokenCreatedAt || Date.now();
+        result.contextTokenExpireAt = incoming.contextTokenExpireAt || (Date.now() + 24 * 3600 * 1000);
+        result.syncBuf = incoming.syncBuf || result.syncBuf;
+        result.lastActiveTime = incoming.lastActiveTime || Date.now();
+        result.reminderSentToken = incoming.reminderSentToken || null;
+        result.reminderSentAt = incoming.reminderSentAt || null;
+        result.webhookTriggeredToken = incoming.webhookTriggeredToken || null;
+        result.webhookTriggeredAt = incoming.webhookTriggeredAt || null;
+        result.webhookLastStatus = incoming.webhookLastStatus || null;
+        result.webhookLastError = incoming.webhookLastError || null;
+        result.invalidationReason = incoming.invalidationReason || null;
+      } else {
+        console.log('[Cluster] 本地持有的会话比对端传入的会话更新，保留本地会话凭据');
+      }
     }
   }
 
@@ -770,7 +795,7 @@ export class ClusterManager {
   async _syncNewlyOnlinePeers(newlyOnlinePeers) {
     if (!newlyOnlinePeers.length) return;
     const localState = storage.get() || this.iLink.state;
-    const hasMeaningfulState = Boolean(localState && (localState.botToken || localState.isExplicitLogout));
+    const hasMeaningfulState = Boolean(localState && (localState.botToken || localState.isExplicitLogout || localState.tokenRevokedAt));
 
     if (this.role === 'master') {
       if (hasMeaningfulState) {
@@ -904,10 +929,13 @@ export class ClusterManager {
             this.failureCount = 0;
             await this.promoteToMaster(`主节点故障，且本节点在存活节点中权重最高 [Priority: ${this.nodePriority} > ${highestPeerPriority}]`);
           } else if (this.nodePriority === highestPeerPriority) {
-            // 权重极端相同：根据显式配置或字母序裁决，防止脑裂
-            const myUrl = config.routePrefix;
-            const peerUrlsSorted = onlinePeers.map(p => p.url).sort();
-            if (peerUrlsSorted.length === 0 || myUrl < peerUrlsSorted[0]) {
+            // 权重极端相同：使用节点自身唯一 URL（而非 routePrefix）按字典序裁决，防止多备机同时晋升脑裂
+            const myUrl = this.selfUrl || `zz-${os.hostname()}-${config.port}`;
+            const tiedPeerUrls = onlinePeers
+              .filter(p => (p.priority || 0) === this.nodePriority)
+              .map(p => p.url)
+              .sort();
+            if (tiedPeerUrls.length === 0 || myUrl < tiedPeerUrls[0]) {
               this.failureCount = 0;
               await this.promoteToMaster(`主节点故障且权重并列，决胜获胜晋升 Master`);
             }

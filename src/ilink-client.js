@@ -296,6 +296,7 @@ export class ILinkClient {
       this.state.webhookLastError = null;
       this.sessionInvalidAttempts = 0;
       delete this.state.isExplicitLogout;
+      delete this.state.tokenRevokedAt;
       this.state.invalidationReason = '已扫码完成，请在手机微信向 Bot 发送任意文本（如发送 1）以满血激活';
       this.state.lastActiveTime = Date.now();
       storage.set(this.state);
@@ -352,6 +353,8 @@ export class ILinkClient {
         } else {
           console.error('[iLink] 微信登录态连续 3 次确认过期 (-14)，需重新扫码');
           this.state.botToken = null;
+          this.state.contextToken = null;
+          this.state.tokenRevokedAt = Date.now();
           this.state.invalidationReason = '微信登录态已过期 (-14)，需重新扫码';
           storage.set(this.state);
         }
@@ -511,6 +514,9 @@ export class ILinkClient {
         if (res.status === 401) {
           console.error('[iLink] Bot Token 已失效或被收回 (HTTP 401)，停止轮询');
           this.pollingActive = false;
+          this.state.botToken = null;
+          this.state.contextToken = null;
+          this.state.tokenRevokedAt = Date.now();
           this.state.invalidationReason = 'Bot Token 已失效 (401)，需重新扫码';
           storage.set(this.state);
           break;

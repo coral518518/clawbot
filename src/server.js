@@ -288,6 +288,7 @@ router.post('/api/restore-auth', requireApiKey, async (req, res) => {
     // 格式化与时间戳推进
     incoming.updatedAt = Date.now();
     delete incoming.isExplicitLogout;
+    delete incoming.tokenRevokedAt;
 
     // 持久化存储并触发本地更新与广播
     storage.set(incoming, true);

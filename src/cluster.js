@@ -153,15 +153,40 @@ export class ClusterManager {
     this.lastRegistrySync = null;
     this.lastRegistryError = null;
 
-    // 多对端节点运行时状态映射表: url => { url, online, role, priority, lastSeen, isAsleep, failureCount, error }
+    // 多对端节点运行时状态映射表: url => { url, online, role, priority, lastSeen, isAsleep, failureCount, error, lastSyncTime, lastSyncStatus, lastSyncError }
     this.peersStatus = new Map();
 
+    this.initialized = false;
+    this._probingPromise = null;
     this.failureCount = 0; // 连续未检测到存活 Master 的心跳周期计数
     this.lastHeartbeat = null;
     this.lastSyncSuccess = null;
     this.lastRoleChangeAt = Date.now();
     this.heartbeatTimer = null;
     this.unsubscribeStorage = null;
+  }
+
+  /**
+   * 原子合并更新单个对端节点状态，防止探测与推送并发写回时互相覆盖字段
+   */
+  _updatePeerStatus(url, patch) {
+    if (!url || !this.peerUrls.includes(url)) return null;
+    const current = this.peersStatus.get(url) || {
+      url,
+      online: null,
+      role: null,
+      priority: 0,
+      lastSeen: null,
+      failureCount: 0,
+      isAsleep: false,
+      error: null,
+      lastSyncTime: null,
+      lastSyncStatus: null,
+      lastSyncError: null
+    };
+    const updated = { ...current, ...patch, url };
+    this.peersStatus.set(url, updated);
+    return updated;
   }
 
   /**
@@ -198,7 +223,10 @@ export class ClusterManager {
           lastSeen: null,
           failureCount: 0,
           isAsleep: false,
-          error: null
+          error: null,
+          lastSyncTime: null,
+          lastSyncStatus: null,
+          lastSyncError: null
         });
         console.log(`[Cluster] 发现新加入集群的对端节点: ${url}`);
       }
@@ -210,7 +238,7 @@ export class ClusterManager {
   /**
    * 与动态注册中心同步：向 Worker 上报本节点并拉取全网活跃对端
    */
-  async syncWithRegistry() {
+  async syncWithRegistry({ isInit = false } = {}) {
     if (!this.registryUrl) return;
 
     let endpoint = this.registryUrl.replace(/\/+$/, '');
@@ -250,9 +278,9 @@ export class ClusterManager {
 
         if (data && Array.isArray(data.peers)) {
           const changed = this.updatePeers(data.peers);
-          if (changed && this.peerUrls.length > 0) {
-            // 对端列表发生变动，立即触发一次探测
-            this._probeAllPeers().catch(() => {});
+          if (changed && !isInit && this.peerUrls.length > 0) {
+            // 对端列表发生变动，立即探测并对新上线节点补齐状态同步
+            await this._probeAllPeers().catch(() => {});
           }
         }
       } else {
@@ -285,7 +313,7 @@ export class ClusterManager {
     // 0. 若配置了动态注册中心，启动时首先向注册中心上报自身并获取当前集群活跃节点池
     if (this.registryUrl) {
       console.log(`[Cluster] 启用动态服务发现中心: ${this.registryUrl} (自身对外 URL: ${this.selfUrl || '未配置'})`);
-      await this.syncWithRegistry();
+      await this.syncWithRegistry({ isInit: true });
       this.startRegistryLoop();
     }
 
@@ -302,6 +330,7 @@ export class ClusterManager {
         this.stopMasterTasks();
       }
       this._registerStorageListener();
+      this.initialized = true;
       this.startHeartbeatLoop();
       return;
     }
@@ -358,6 +387,7 @@ export class ClusterManager {
 
     // 4. 角色与权威凭证完全确定后，再安全挂载存储监听，避免启动期并发竞争广播
     this._registerStorageListener();
+    this.initialized = true;
 
     // 5. 启动多节点心跳与故障转移检测回路
     this.startHeartbeatLoop();
@@ -466,7 +496,6 @@ export class ClusterManager {
    */
   async _syncToSinglePeer(url, state) {
     if (!url || !state) return false;
-    const current = this.peersStatus.get(url) || { url };
     const syncUrl = buildPeerEndpoint(url, `${config.routePrefix}/api/cluster/sync`);
 
     // 带 1 次快速重试（等待 1s），平滑吸收对端网络毛刺或反向代理连接瞬断
@@ -484,8 +513,7 @@ export class ClusterManager {
           signal: AbortSignal.timeout(6000)
         });
         if (res.ok) {
-          this.peersStatus.set(url, {
-            ...current,
+          this._updatePeerStatus(url, {
             lastSyncTime: Date.now(),
             lastSyncStatus: 'success',
             lastSyncError: null
@@ -501,8 +529,7 @@ export class ClusterManager {
         // 401 密钥不匹配无重试必要；若第 2 次尝试依然失败，则记录告警
         if (res.status === 401 || attempt === 2) {
           console.warn(`[Cluster] 推送状态至对端 (${url}) 返回失败: ${errDetail}`);
-          this.peersStatus.set(url, {
-            ...current,
+          this._updatePeerStatus(url, {
             lastSyncTime: Date.now(),
             lastSyncStatus: 'failed',
             lastSyncError: errDetail
@@ -513,8 +540,7 @@ export class ClusterManager {
       } catch (err) {
         if (attempt === 2) {
           console.warn(`[Cluster] 推送状态至对端 (${url}) 失败: ${err.message}`);
-          this.peersStatus.set(url, {
-            ...current,
+          this._updatePeerStatus(url, {
             lastSyncTime: Date.now(),
             lastSyncStatus: 'failed',
             lastSyncError: err.message
@@ -739,27 +765,92 @@ export class ClusterManager {
   }
 
   /**
+   * 为新发现或刚恢复上线的对端节点补齐状态同步（避免静默窗口期数据遗漏）
+   */
+  async _syncNewlyOnlinePeers(newlyOnlinePeers) {
+    if (!newlyOnlinePeers.length) return;
+    const localState = storage.get() || this.iLink.state;
+    const hasMeaningfulState = Boolean(localState && (localState.botToken || localState.isExplicitLogout));
+
+    if (this.role === 'master') {
+      if (hasMeaningfulState) {
+        // 仅向不会触发自身让位的对端主动补推状态（高优先级 Master 由心跳双主仲裁处理）
+        const targets = newlyOnlinePeers.filter(
+          ({ probe }) => !(probe.role === 'master' && (probe.priority || 0) > this.nodePriority)
+        );
+        if (targets.length > 0) {
+          const results = await Promise.allSettled(
+            targets.map(({ url }) => this._syncToSinglePeer(url, localState))
+          );
+          if (results.some(r => r.status === 'fulfilled' && r.value === true)) {
+            this.lastSyncSuccess = Date.now();
+          }
+        }
+      } else {
+        await this.pullStateFromPeers(null, false);
+      }
+      return;
+    }
+
+    // Standby 节点：新发现或恢复上线了 Master（或自身尚无凭证时发现了在线节点），主动拉取一次最新状态
+    const onlineMasters = newlyOnlinePeers
+      .filter(({ probe }) => probe.role === 'master')
+      .sort((a, b) => (b.probe.priority || 0) - (a.probe.priority || 0));
+
+    if (onlineMasters.length > 0) {
+      await this.pullStateFromPeers(onlineMasters[0].url, false);
+    } else if (!localState?.botToken) {
+      await this.pullStateFromPeers(newlyOnlinePeers[0].url, false);
+    }
+  }
+
+  /**
    * 并发探测所有对端节点
    */
   async _probeAllPeers() {
     if (!this.peerUrls.length) return;
-    const tasks = this.peerUrls.map(async (url) => {
-      const probe = await this._probeSinglePeer(url);
-      const current = this.peersStatus.get(url) || { url, failureCount: 0 };
-      this.peersStatus.set(url, {
-        ...current,
-        url,
-        online: probe.online,
-        role: probe.role,
-        priority: probe.priority !== undefined ? probe.priority : 50,
-        lastRoleChangeAt: probe.lastRoleChangeAt || 0,
-        isAsleep: Boolean(probe.isAsleep),
-        lastSeen: probe.online ? Date.now() : current.lastSeen,
-        failureCount: probe.online ? 0 : (current.failureCount + 1),
-        error: probe.reason || (probe.online ? null : '连接超时或无响应')
+    while (this._probingPromise) {
+      await this._probingPromise;
+      // 若并发等待期间有新增对端尚未被探测，继续补探测一轮
+      if (!this.peerUrls.some(u => this.peersStatus.get(u)?.online === null)) {
+        return;
+      }
+    }
+
+    this._probingPromise = (async () => {
+      const newlyOnlinePeers = [];
+      const tasks = this.peerUrls.map(async (url) => {
+        const probe = await this._probeSinglePeer(url);
+        const current = this.peersStatus.get(url) || { url, failureCount: 0 };
+        const wasOnline = Boolean(current.online);
+
+        const updated = this._updatePeerStatus(url, {
+          online: probe.online,
+          role: probe.role,
+          priority: probe.priority !== undefined ? probe.priority : 50,
+          lastRoleChangeAt: probe.lastRoleChangeAt || 0,
+          isAsleep: Boolean(probe.isAsleep),
+          lastSeen: probe.online ? Date.now() : current.lastSeen,
+          failureCount: probe.online ? 0 : ((current.failureCount || 0) + 1),
+          error: probe.reason || (probe.online ? null : '连接超时或无响应')
+        });
+
+        if (updated && !wasOnline && probe.online) {
+          newlyOnlinePeers.push({ url, probe });
+        }
       });
-    });
-    await Promise.allSettled(tasks);
+      await Promise.allSettled(tasks);
+
+      if (this.initialized && newlyOnlinePeers.length > 0) {
+        await this._syncNewlyOnlinePeers(newlyOnlinePeers);
+      }
+    })();
+
+    try {
+      await this._probingPromise;
+    } finally {
+      this._probingPromise = null;
+    }
   }
 
   // 兼容旧的单对端探测
@@ -898,6 +989,7 @@ export class ClusterManager {
   }
 
   stop() {
+    this.initialized = false;
     if (this.registryTimer) {
       clearInterval(this.registryTimer);
       this.registryTimer = null;

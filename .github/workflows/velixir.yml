@@ -1,0 +1,34 @@
+name: Deploy to velixir
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # 排队机制：如果上一次部署还在进行，新的推送会等待其完成后再部署
+    concurrency:
+      group: velixir-deploy
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install the velixir CLI
+        shell: bash
+        run: |
+          curl -fsSL https://velixir.net/install.sh | sh
+          echo "$HOME/.velixir/bin" >> "$GITHUB_PATH"
+
+      - name: Deploy
+        env:
+          VELIXIR_API_KEY: ${{ secrets.VELIXIR_API_KEY }}
+        run: |
+          if [ -z "$VELIXIR_API_KEY" ]; then
+            echo "::error::Add a repository secret named VELIXIR_API_KEY with a velixir API key that has Write permission (Settings > Secrets and variables > Actions)."
+            exit 1
+          fi
+          velixir deploy --app de10a23b-c1c3-4022-8616-b46460b4c88a
